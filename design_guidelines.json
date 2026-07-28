@@ -1,0 +1,90 @@
+{
+  "theme": {
+    "mode": "dark",
+    "archetype": "ARCHETYPE 7: ELECTRIC & NEON",
+    "rationale": "High-tech, dark mode with neon accents aligns perfectly with the 'AI component detection' requirement."
+  },
+  "typography": {
+    "heading_font": "Unbounded",
+    "body_font": "JetBrains Mono",
+    "setup": "Import via Google Fonts in CSS: @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Unbounded:wght@300;500;700;900&display=swap');",
+    "rules": [
+      "H1 (Hero Heading): text-4xl sm:text-5xl lg:text-6xl. DO NOT exceed text-6xl.",
+      "Headings MUST use tight letter spacing: tracking-tight or tracking-tighter.",
+      "Overlines / Labels MUST be Uppercase + Tiny + Wide Spacing (tracking-[0.2em]).",
+      "Line Height: Tight (leading-none) for headers, Loose (leading-relaxed) for body.",
+      "Never use Inter, Roboto, Open Sans, or Lato for Headings."
+    ]
+  },
+  "colors": {
+    "background": "#05050A",
+    "surface": "#111116",
+    "primary": "#22D3EE",
+    "secondary": "#A855F7",
+    "success": "#22C55E",
+    "text": {
+      "main": "#F8FAFC",
+      "muted": "#94A3B8"
+    },
+    "rules": [
+      "Never use pure #000000 or #808080. Tint neutrals with indigo/blue.",
+      "Ensure minimum 4.5:1 contrast ratio for normal text.",
+      "ALWAYS explicitly set text color on hover (e.g., hover:bg-cyan-400 hover:text-black)."
+    ]
+  },
+  "surfaces": {
+    "nav_bar": "Glassmorphism 'Crystal' variant: bg-black/60 backdrop-blur-xl border-b border-white/10. CRITICAL: Never use a fully transparent background over content.",
+    "upload_zone": "Retro-Futurism / The Tracing Beam. Deep background, dashed border with neon glow on hover. drop-shadow-[0_0_8px_rgba(34,211,238,0.5)].",
+    "history_cards": "Grid Borders (The Technical Look). 1px solid border-white/10. Flat background."
+  },
+  "spacing_and_layout": {
+    "spacing_system": "Generous Spacing: p-6, p-8, p-12. Containers with borders MUST have internal padding.",
+    "history_grid": "MODE B: High Density Grid for Dashboards. grid-cols-1 md:grid-cols-3 lg:grid-cols-4. gap-6.",
+    "alignment": "Mobile-First. Avoid standard Bootstrap columns. Embrace asymmetry in the hero section."
+  },
+  "component_instructions": {
+    "upload_section": "Create a massive, immersive drag-and-drop zone. Use asymmetrical background elements.",
+    "result_view": "Must show 'Nom du composant' (heading), 'Prix estimé' (success color, mono font), 'Description de son utilité' (body font). User MUST be able to modify these details (add an edit state or input fields).",
+    "history_section": "Bento Grid of saved analyses. Show thumbnail, name, and price.",
+    "footer": "Must have py-20. Crucial text at the bottom: 'fait par theo pour le bac 2026-2027'. Do not hide or shrink it too much."
+  },
+  "motion": {
+    "requirements": [
+      "Hover states on all interactive elements.",
+      "Staggered entrance animations for history list.",
+      "Smooth state changes using explicit transition properties (e.g., transition: transform 0.2s ease, opacity 0.2s ease).",
+      "DO NOT use 'transition: all'."
+    ]
+  },
+  "accessibility": {
+    "testing": "All interactive and key informational elements MUST include a data-testid attribute (e.g., data-testid='upload-zone', data-testid='history-item').",
+    "motion": "Respect prefers-reduced-motion."
+  },
+  "image_urls": {
+    "aesthetic_bg": {
+      "url": "https://images.unsplash.com/photo-1764258560214-71d5f28852d0?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzV8MHwxfHNlYXJjaHwyfHxlbGVjdHJvbmljJTIwbW90aGVyYm9hcmQlMjBkYXJrJTIwbmVvbnxlbnwwfHx8fDE3ODUyNzI4NjZ8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Abstract neon lines. Use for background decoration or hero section overlay with low opacity.",
+      "category": "background"
+    },
+    "placeholder_component": {
+      "url": "https://images.unsplash.com/photo-1526392269816-39d8ed656494?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNDR8MHwxfHNlYXJjaHwxfHxjb21wdXRlciUyMGNvbXBvbmVudCUyMG1hY3JvfGVufDB8fHx8MTc4NTI3Mjg2Nnww&ixlib=rb-4.1.0&q=85",
+      "description": "Green circuit board. Use as placeholder image for the history thumbnails or upload empty state.",
+      "category": "placeholder"
+    }
+  },
+  "universal_guidelines_for_main_agent": [
+    "You tend to converge toward generic, 'on distribution' outputs. Avoid the 'AI slop' aesthetic.",
+    "Do not use generic centered layouts, simplistic gradients, and uniform styling.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Use glass-morphism effects with backdrop filters (12-24px blur).",
+    "You MUST NOT apply universal transition. Eg: transition: all.",
+    "You MUST NOT center align the app container, ie do not add .App { text-align: center; } in the css file.",
+    "Always use modern button styles like pill-shaped, or sharp button with interaction animations.",
+    "NEVER use AI assistant Emoji characters like robot, brain, lightbulb etc for icons. Use lucide-react.",
+    "Every interaction needs micro-animations - hover states, transitions.",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "Prioritize using pre-existing components from src/components/ui.",
+    "Use sonner for toasts.",
+    "All file paths and syntax must be targeted for .js files, NOT .tsx."
+  ]
+}
