@@ -1,90 +1,121 @@
 {
-  "theme": {
+  "theme_and_colors": {
     "mode": "dark",
-    "archetype": "ARCHETYPE 7: ELECTRIC & NEON",
-    "rationale": "High-tech, dark mode with neon accents aligns perfectly with the 'AI component detection' requirement."
+    "archetype": "Electric & Neon (Tokyo Night Cyberpunk)",
+    "backgrounds": {
+      "base": "#050505",
+      "surface": "#0B0C10",
+      "glass": "rgba(11, 12, 16, 0.6)"
+    },
+    "accents": {
+      "neon_crimson": "#FF2A42",
+      "cyber_cyan": "#00F0FF",
+      "tokyo_purple": "#B026FF",
+      "yuzu_yellow": "#FDE047"
+    },
+    "rules": [
+      "Use dark colors independently without gradients. DO NOT use dark colors as gradients.",
+      "Tint neutral greys with a bit of blue to make them feel alive (cyberpunk feel)."
+    ]
   },
   "typography": {
-    "heading_font": "Unbounded",
-    "body_font": "JetBrains Mono",
-    "setup": "Import via Google Fonts in CSS: @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Unbounded:wght@300;500;700;900&display=swap');",
-    "rules": [
-      "H1 (Hero Heading): text-4xl sm:text-5xl lg:text-6xl. DO NOT exceed text-6xl.",
-      "Headings MUST use tight letter spacing: tracking-tight or tracking-tighter.",
-      "Overlines / Labels MUST be Uppercase + Tiny + Wide Spacing (tracking-[0.2em]).",
-      "Line Height: Tight (leading-none) for headers, Loose (leading-relaxed) for body.",
-      "Never use Inter, Roboto, Open Sans, or Lato for Headings."
-    ]
-  },
-  "colors": {
-    "background": "#05050A",
-    "surface": "#111116",
-    "primary": "#22D3EE",
-    "secondary": "#A855F7",
-    "success": "#22C55E",
-    "text": {
-      "main": "#F8FAFC",
-      "muted": "#94A3B8"
+    "fonts": {
+      "display": "Zen Dots",
+      "headings": "Rajdhani",
+      "body": "Outfit",
+      "data_and_tech": "IBM Plex Mono"
     },
+    "import_url": "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@300;400;500;700&family=Rajdhani:wght@500;600;700&family=Zen+Dots&display=swap",
     "rules": [
-      "Never use pure #000000 or #808080. Tint neutrals with indigo/blue.",
-      "Ensure minimum 4.5:1 contrast ratio for normal text.",
-      "ALWAYS explicitly set text color on hover (e.g., hover:bg-cyan-400 hover:text-black)."
+      "NO Inter, Roboto, Open Sans, or Lato for Headings.",
+      "NO Space Grotesk for dashboard sections.",
+      "Headings (Rajdhani) must use tight letter spacing (tracking-tight).",
+      "Data, prices, and stats must use IBM Plex Mono for a technical readout look.",
+      "Use variable weights to break standard Regular/Bold binaries."
     ]
   },
-  "surfaces": {
-    "nav_bar": "Glassmorphism 'Crystal' variant: bg-black/60 backdrop-blur-xl border-b border-white/10. CRITICAL: Never use a fully transparent background over content.",
-    "upload_zone": "Retro-Futurism / The Tracing Beam. Deep background, dashed border with neon glow on hover. drop-shadow-[0_0_8px_rgba(34,211,238,0.5)].",
-    "history_cards": "Grid Borders (The Technical Look). 1px solid border-white/10. Flat background."
+  "visual_enhancers": {
+    "surfaces": [
+      "Glassmorphism (The Crystal Variant): backdrop-blur-xl with bg-black/60.",
+      "MUST have 1px delicate inner stroke for borders (e.g., border-cyan-500/30 or border-white/10).",
+      "Avoid muddy gray transparency. High-end glass increases color saturation.",
+      "Grid Borders (The Technical Look) for data-heavy sections (history grid). Expose the skeleton."
+    ],
+    "neon_effects": [
+      "Add glowing shadows to primary buttons and active neon borders.",
+      "Use subtle drop-shadow-[0_0_8px_rgba(0,240,255,0.5)] on text for cyber neon feel."
+    ],
+    "japanese_accents": [
+      "Incorporate decorative Japanese Kanji subtly in the background (e.g., 'スキャン' for Scan, 'システム' for System, '東京' for Tokyo) with very low opacity (text-white/5).",
+      "Use vertical text layouts for aesthetic sidebars or decorative elements to emphasize the Tokyo cyberpunk vibe."
+    ]
   },
-  "spacing_and_layout": {
-    "spacing_system": "Generous Spacing: p-6, p-8, p-12. Containers with borders MUST have internal padding.",
-    "history_grid": "MODE B: High Density Grid for Dashboards. grid-cols-1 md:grid-cols-3 lg:grid-cols-4. gap-6.",
-    "alignment": "Mobile-First. Avoid standard Bootstrap columns. Embrace asymmetry in the hero section."
+  "layouts_and_grids": {
+    "general": "Mobile-first, asymmetrical for marketing/auth areas, dense 'High Density Grid' for history/dashboard.",
+    "spacing": "Generous Spacing Philosophy (p-6, p-8, p-12). Containers with borders must have internal padding.",
+    "bento_grid": "For history: grid-cols-1 md:grid-cols-3 lg:grid-cols-4 with gap-4 or gap-6. Every pixel utilized.",
+    "alignment": "Optical alignment over geometrical alignment."
   },
   "component_instructions": {
-    "upload_section": "Create a massive, immersive drag-and-drop zone. Use asymmetrical background elements.",
-    "result_view": "Must show 'Nom du composant' (heading), 'Prix estimé' (success color, mono font), 'Description de son utilité' (body font). User MUST be able to modify these details (add an edit state or input fields).",
-    "history_section": "Bento Grid of saved analyses. Show thumbnail, name, and price.",
-    "footer": "Must have py-20. Crucial text at the bottom: 'fait par theo pour le bac 2026-2027'. Do not hide or shrink it too much."
-  },
-  "motion": {
-    "requirements": [
-      "Hover states on all interactive elements.",
-      "Staggered entrance animations for history list.",
-      "Smooth state changes using explicit transition properties (e.g., transition: transform 0.2s ease, opacity 0.2s ease).",
-      "DO NOT use 'transition: all'."
+    "auth_page": [
+      "Split layout: 50% image (Tokyo night street), 50% form.",
+      "Image overlay: bg-black/40 with slight grain texture. Max overlay opacity.",
+      "Form: Glassmorphism container, neon glowing login/register tabs, Google login button with cyber styling."
+    ],
+    "upload_zone": [
+      "Large central area, dashed glowing border (border-cyan-500/50).",
+      "Include a pulsing or scanning animation (e.g., moving horizontal cyan line like a scanner).",
+      "Empty state background: abstract cyberpunk pattern."
+    ],
+    "ai_result_card": [
+      "MUST have inline editable fields for name, category, price estimate, description, confidence.",
+      "Technical readout aesthetic for the confidence bar.",
+      "Cardless or flat background with 1px border. Technical data layout."
+    ],
+    "offers_section": [
+      "List of best-price offers.",
+      "Shop buttons (Amazon, LDLC, Google Shopping) should use sharp technical buttons with interaction animations."
+    ],
+    "footer": [
+      "MUST include EXACT text: 'fait par theo pour le bac 2026-2027'.",
+      "Center-aligned or technical layout for footer.",
+      "High contrast."
     ]
   },
-  "accessibility": {
-    "testing": "All interactive and key informational elements MUST include a data-testid attribute (e.g., data-testid='upload-zone', data-testid='history-item').",
-    "motion": "Respect prefers-reduced-motion."
-  },
-  "image_urls": {
-    "aesthetic_bg": {
-      "url": "https://images.unsplash.com/photo-1764258560214-71d5f28852d0?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzV8MHwxfHNlYXJjaHwyfHxlbGVjdHJvbmljJTIwbW90aGVyYm9hcmQlMjBkYXJrJTIwbmVvbnxlbnwwfHx8fDE3ODUyNzI4NjZ8MA&ixlib=rb-4.1.0&q=85",
-      "description": "Abstract neon lines. Use for background decoration or hero section overlay with low opacity.",
-      "category": "background"
+  "motion": [
+    "Hover states: Neon glow increase, slight lift (-translate-y-1).",
+    "Entrance animations: Staggered fade-up for history grid items (framer-motion).",
+    "Scanning effect: Vertical scanning line loop over the uploaded image.",
+    "Required: Hover, click/press, and focus states for accessibility."
+  ],
+  "accessibility": [
+    "Ensure contrast ratios are met despite dark themes. (Normal text 4.5:1, large 3:1)",
+    "Focus states must have high contrast (focus:ring-cyan-500).",
+    "Respect prefers-reduced-motion for the scanning animations.",
+    "Include data-testid on all interactive elements (buttons, inputs, etc)."
+  ],
+  "image_urls": [
+    {
+      "url": "https://images.unsplash.com/photo-1551641506-ee5bf4cb45f1?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NjZ8MHwxfHNlYXJjaHwyfHx0b2t5byUyMG5pZ2h0JTIwbmVvbiUyMHN0cmVldHxlbnwwfHx8fDE3ODUyNzY4NTF8MA&ixlib=rb-4.1.0&q=85",
+      "category": "auth_background",
+      "description": "Tokyo night neon street for the auth page split layout."
     },
-    "placeholder_component": {
-      "url": "https://images.unsplash.com/photo-1526392269816-39d8ed656494?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNDR8MHwxfHNlYXJjaHwxfHxjb21wdXRlciUyMGNvbXBvbmVudCUyMG1hY3JvfGVufDB8fHx8MTc4NTI3Mjg2Nnww&ixlib=rb-4.1.0&q=85",
-      "description": "Green circuit board. Use as placeholder image for the history thumbnails or upload empty state.",
-      "category": "placeholder"
+    {
+      "url": "https://images.unsplash.com/photo-1689443111130-6e9c7dfd8f9e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzJ8MHwxfHNlYXJjaHwzfHxjeWJlcnB1bmslMjBhYnN0cmFjdCUyMHRlY2h8ZW58MHx8fHwxNzg1Mjc2ODUxfDA&ixlib=rb-4.1.0&q=85",
+      "category": "abstract_background",
+      "description": "Cyberpunk abstract tech for upload zone or decorative background."
     }
-  },
-  "universal_guidelines_for_main_agent": [
-    "You tend to converge toward generic, 'on distribution' outputs. Avoid the 'AI slop' aesthetic.",
-    "Do not use generic centered layouts, simplistic gradients, and uniform styling.",
-    "Create depth through layered design elements with z-index hierarchy.",
-    "Use glass-morphism effects with backdrop filters (12-24px blur).",
-    "You MUST NOT apply universal transition. Eg: transition: all.",
-    "You MUST NOT center align the app container, ie do not add .App { text-align: center; } in the css file.",
-    "Always use modern button styles like pill-shaped, or sharp button with interaction animations.",
-    "NEVER use AI assistant Emoji characters like robot, brain, lightbulb etc for icons. Use lucide-react.",
-    "Every interaction needs micro-animations - hover states, transitions.",
-    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
-    "Prioritize using pre-existing components from src/components/ui.",
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "Use JavaScript (.js, .jsx) only. No TypeScript (.ts, .tsx).",
+    "Install and import Google Fonts in index.css: Rajdhani, Zen Dots, Outfit, IBM Plex Mono.",
+    "Update tailwind.config.js to include new colors and fonts based on this design system.",
+    "DO NOT break existing functionality. This is a redesign request only.",
+    "Use framer-motion for animations and lucide-react for icons.",
+    "DO NOT apply universal transition (transition: all). Use specific transitions (e.g., transition: transform 0.2s ease, opacity 0.2s ease).",
+    "DO NOT center align the app container (.App { text-align: center; }).",
     "Use sonner for toasts.",
-    "All file paths and syntax must be targeted for .js files, NOT .tsx."
+    "Create new components in src/components/ui/ matching the existing Shadcn conventions.",
+    "DO NOT use complete transparent backgrounds for headers, overlays, or any surface with content underneath."
   ]
 }
