@@ -1,4 +1,4 @@
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { ASSET } from "@/context/AuthContext";
 
 const ROWS = [
@@ -14,6 +14,7 @@ export default function CompareModal({ open, onOpenChange, items }) {
       <DialogContent data-testid="compare-modal" className="max-w-4xl glass border-neon-cyan/30 text-white max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="font-head text-2xl tracking-wide neon-cyan">Comparateur de composants</DialogTitle>
+          <DialogDescription className="text-muted-foreground font-data text-xs">Comparaison côte à côte des composants sélectionnés</DialogDescription>
         </DialogHeader>
         <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0,1fr))` }}>
           {items.map((it) => (

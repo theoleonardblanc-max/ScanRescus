@@ -39,6 +39,11 @@ export function AuthProvider({ children }) {
       setLoading(false);
       return;
     }
+    if (window.location.pathname.startsWith("/c/")) {
+      setUser(false);
+      setLoading(false);
+      return;
+    }
     checkAuth();
   }, [checkAuth]);
 
