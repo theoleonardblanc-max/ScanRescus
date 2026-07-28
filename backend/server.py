@@ -141,6 +141,7 @@ class AnalysisUpdate(BaseModel):
     category: Optional[str] = None
     price_estimate: Optional[str] = None
     description: Optional[str] = None
+    is_favorite: Optional[bool] = None
 
 
 # ---------- Auth routes ----------
@@ -258,6 +259,19 @@ def _strip_data_url(b64: str) -> str:
     return b64.split(",", 1)[-1] if b64.startswith("data:") else b64
 
 
+def parse_price(text: str) -> float:
+    if not text:
+        return 0.0
+    nums = re.findall(r"\d+(?:[.,]\d+)?", text.replace("\u202f", "").replace(" ", ""))
+    vals = [float(n.replace(",", ".")) for n in nums]
+    if not vals:
+        return 0.0
+    return round(sum(vals) / len(vals), 2)
+
+
+DEMO_IMAGE_URL = "https://images.unsplash.com/photo-1591799264318-7e6ef8ddb7ea?crop=entropy&cs=srgb&fm=jpg&w=1000&q=80"
+
+
 async def _llm_call(system: str, text: str, image_b64: str = None):
     chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"s-{uuid.uuid4()}", system_message=system).with_model("openai", "gpt-5.4")
     files = [ImageContent(image_base64=_strip_data_url(image_b64))] if image_b64 else None
@@ -265,15 +279,12 @@ async def _llm_call(system: str, text: str, image_b64: str = None):
     return await chat.send_message(msg)
 
 
-@api_router.post("/analyze")
-async def analyze(req: AnalyzeRequest, request: Request):
-    user = await get_current_user(request)
+async def _run_analysis(image_full_b64: str, user: dict) -> dict:
     if not EMERGENT_LLM_KEY:
         raise HTTPException(status_code=500, detail="Clé IA non configurée")
-
-    clean = _strip_data_url(req.image_base64)
+    clean = _strip_data_url(image_full_b64)
     try:
-        raw = await _llm_call(SYSTEM_PROMPT, "Identifie le composant sur cette photo et renvoie le JSON demandé.", req.image_base64)
+        raw = await _llm_call(SYSTEM_PROMPT, "Identifie le composant sur cette photo et renvoie le JSON demandé.", image_full_b64)
     except Exception as e:
         logger.exception("Erreur IA")
         raise HTTPException(status_code=502, detail=f"Erreur d'analyse IA: {str(e)}")
@@ -284,7 +295,6 @@ async def analyze(req: AnalyzeRequest, request: Request):
     except Exception:
         parsed = {"name": "Composant inconnu", "category": "", "price_estimate": "", "description": raw[:400], "confidence": "Faible"}
 
-    # store image in object storage
     image_url = ""
     storage_path = ""
     try:
@@ -301,16 +311,50 @@ async def analyze(req: AnalyzeRequest, request: Request):
         "name": parsed.get("name", "Composant inconnu"),
         "category": parsed.get("category", ""),
         "price_estimate": parsed.get("price_estimate", ""),
+        "price_value": parse_price(parsed.get("price_estimate", "")),
         "description": parsed.get("description", ""),
         "confidence": parsed.get("confidence", ""),
         "storage_path": storage_path,
         "image_url": image_url,
         "offers": [],
+        "is_favorite": False,
+        "share_id": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.analyses.insert_one(doc)
     doc.pop("_id", None)
     return doc
+
+
+@api_router.post("/analyze")
+async def analyze(req: AnalyzeRequest, request: Request):
+    user = await get_current_user(request)
+    return await _run_analysis(req.image_base64, user)
+
+
+@api_router.post("/analyze/demo")
+async def analyze_demo(request: Request):
+    user = await get_current_user(request)
+    try:
+        r = requests.get(DEMO_IMAGE_URL, timeout=30)
+        r.raise_for_status()
+        b64 = base64.b64encode(r.content).decode("utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Impossible de charger l'exemple: {str(e)}")
+    return await _run_analysis(f"data:image/jpeg;base64,{b64}", user)
+
+
+@api_router.get("/stats")
+async def get_stats(request: Request):
+    user = await get_current_user(request)
+    docs = await db.analyses.find({"user_id": user["user_id"]}, {"_id": 0, "price_value": 1, "is_favorite": 1, "category": 1}).to_list(1000)
+    total_value = round(sum(d.get("price_value", 0) or 0 for d in docs), 2)
+    favorites = sum(1 for d in docs if d.get("is_favorite"))
+    categories = {}
+    for d in docs:
+        c = d.get("category") or "Autre"
+        categories[c] = categories.get(c, 0) + 1
+    return {"count": len(docs), "total_value": total_value, "favorites": favorites, "categories": categories}
 
 
 @api_router.get("/history")
@@ -324,12 +368,52 @@ async def get_history(request: Request):
 async def update_analysis(analysis_id: str, update: AnalysisUpdate, request: Request):
     user = await get_current_user(request)
     fields = {k: v for k, v in update.model_dump().items() if v is not None}
+    if "price_estimate" in fields:
+        fields["price_value"] = parse_price(fields["price_estimate"])
     if fields:
         await db.analyses.update_one({"id": analysis_id, "user_id": user["user_id"]}, {"$set": fields})
     doc = await db.analyses.find_one({"id": analysis_id, "user_id": user["user_id"]}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Analyse introuvable")
     return doc
+
+
+@api_router.post("/analysis/{analysis_id}/share")
+async def share_analysis(analysis_id: str, request: Request):
+    user = await get_current_user(request)
+    doc = await db.analyses.find_one({"id": analysis_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Analyse introuvable")
+    share_id = doc.get("share_id")
+    if not share_id:
+        share_id = uuid.uuid4().hex[:10]
+        await db.analyses.update_one({"id": analysis_id, "user_id": user["user_id"]}, {"$set": {"share_id": share_id}})
+    return {"share_id": share_id}
+
+
+@api_router.get("/public/component/{share_id}")
+async def public_component(share_id: str):
+    doc = await db.analyses.find_one({"share_id": share_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Fiche introuvable")
+    return {
+        "name": doc.get("name"), "category": doc.get("category"),
+        "price_estimate": doc.get("price_estimate"), "description": doc.get("description"),
+        "confidence": doc.get("confidence"), "offers": doc.get("offers", []),
+        "image_url": f"/api/public/image/{share_id}" if doc.get("storage_path") else "",
+    }
+
+
+@api_router.get("/public/image/{share_id}")
+async def public_image(share_id: str):
+    doc = await db.analyses.find_one({"share_id": share_id}, {"_id": 0, "storage_path": 1})
+    if not doc or not doc.get("storage_path"):
+        raise HTTPException(status_code=404, detail="Image introuvable")
+    try:
+        data, content_type = get_object(doc["storage_path"])
+    except Exception:
+        raise HTTPException(status_code=404, detail="Image introuvable")
+    return StarletteResponse(content=data, media_type=content_type)
 
 
 @api_router.delete("/analysis/{analysis_id}")

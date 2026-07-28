@@ -1,0 +1,53 @@
+{
+  "summary": "Full regression + iteration_3 new features tested. Backend: 34/34 pytest passing (added 12 new tests covering /api/stats, /api/analyze/demo real gpt-5.4 vision, favorite toggle + stats.favorites recompute, price_estimate -> price_value recompute, share_id stable + owner-scoped, /api/public/component/{share_id} without auth, /api/public/image/{share_id} without auth, unknown share 404s). Existing 22 tests (auth, analyze, offers, history, files, delete, cross-user isolation) still pass. Frontend Playwright end-to-end: login theo@test.com -> Home with StatsBar (4 cards) -> Demo btn triggered real gpt-5.4 (identified 'Processeur AMD Ryzen 7 3700X', 60-100 €, Élevée) -> favorite toggle -> Share btn copied /c/f8b9f08101 URL to clipboard -> 4 real AI offers -> jsPDF exported -> Edit persists -> Stats bar updated (count=2, favoris=1) -> history search filters 1 result, filter-fav shows 1, compare-toggle -> compare-select 2 items -> compare-modal opens -> delete works -> Public share page /c/{share_id} fetched in fresh browser context (no cookies): 200 OK, H1='Carte graphique NVIDIA GeForce RTX 2080', image loaded at naturalWidth=800, footer 'fait par theo pour le bac 2026-2027' present -> logout returns to Auth. Footer credit exact. No blockers.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/public/component/{share_id}", "issue": "Returns image_url ('/api/public/image/{share_id}') even when doc.storage_path is missing? Actually it correctly returns '' in that case, but shape docs the empty string only implicitly. Consider omitting the key or returning null for clearer contract."},
+      {"endpoint": "GET /api/files/{path}", "issue": "?auth= session token still passed in URL query (carried from iteration_2). Consider signed URLs."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Public /c/:shareId page", "issue": "AuthContext runs on the public route too and fires GET /api/auth/me returning 401 for anonymous visitors. Non-blocking (PublicComponent renders correctly), but produces console errors and unnecessary network traffic for shared links. Consider skipping checkAuth() when route matches /c/:shareId or scoping AuthProvider under a non-public branch of the router.", "affected_selectors": ["h1", "img"]}
+    ],
+    "design_issues": [
+      {"screen": "CompareModal", "issues": ["Radix DialogContent warning: 'Missing Description or aria-describedby' — cosmetic a11y warning; wrap with DialogDescription or add aria-describedby to remove the warning."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_component_detector.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Skip auth check on /c/:shareId to avoid 401 noise for anonymous share visitors (see integration_issues).",
+    "OPTIONAL: Add DialogDescription to CompareModal to silence Radix a11y warning.",
+    "OPTIONAL: Return a stable shape for /api/public/component image_url (null vs empty string).",
+    "Iteration_2 unresolved code-review items still stand (see critical_code_review_comments)."
+  ],
+  "critical_code_review_comments": [
+    "server.py: _run_analysis still keeps a saved analysis doc with empty image_url when put_object fails. Consider transactional cleanup or a 502 to the client.",
+    "server.py: storage_key lazy init is not lock-protected; concurrent first requests may double-init. Use asyncio.Lock or move init to startup task.",
+    "server.py: requests.post/get in put_object/get_object/google_session/analyze_demo are SYNC calls inside async endpoints — they block the event loop. Move to httpx.AsyncClient.",
+    "server.py: /api/analysis/{id}/offers $set filter is by id only; add user_id to the update filter for defense in depth.",
+    "server.py: /api/public/component and /api/public/image expose a share_id lookup on the analyses collection — no rate limiting. Brute force of 10-char hex share_ids is still ~2^40 space but rate-limiting the public route is prudent.",
+    "server.py: DEMO_IMAGE_URL is a hotlinked Unsplash asset. If Unsplash rotates or rate-limits the URL, /api/analyze/demo will 502. Consider caching the sample to object storage on startup.",
+    "Home.jsx exportPdf: fixed y-coordinate for description lines; long descriptions still overflow. Use jsPDF page-break logic (splitTextToSize returns lines, iterate and doc.addPage() when y > 270).",
+    "PublicComponent.jsx: makes ASSET-relative img request without falling back if data.image_url is empty. Add a placeholder or skip rendering the <img> when image_url is falsy.",
+    "AuthContext.jsx: axios.defaults.withCredentials=true is global. On /c/:shareId this causes credentialed calls to /api/auth/me. Scope to a dedicated axios instance and/or skip checkAuth for the public route.",
+    "CompareModal.jsx: uses inline gridTemplateColumns and ROWS metadata but no semantic table -> accessibility poor. Consider a semantic <table> or grid with aria-labels.",
+    "pytest.ini pins DB_NAME=test_database in .env — same DB used for real and test data. TEST_ prefix helps but there is still no cleanup fixture; test users/analyses accumulate across runs.",
+    "iter3 fixtures use module scope while auth_client/other_client are session-scoped, mixing scopes can cause fixture teardown-order surprises with pytest-xdist loadscope. Currently harmless because module and session teardown both run at end of the worker."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_component_detector.py"
+  ],
+  "success_rate": {"backend": "100% (34/34)", "frontend": "100% (19/19 flows executed end-to-end)"},
+  "test_credentials": "theo@test.com / test1234 (works). Additional dynamic users iter3_<hex>@compotest.example.com created via /api/auth/register.",
+  "seed_data_creation": "Test users iter3_* + test_* accumulate in test_database. No cleanup fixture added this iteration. Real gpt-5.4 analyses are stored in Emergent object storage (small JPGs).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run `python -m pytest backend/tests/test_component_detector.py -v` from /app or /app/backend. All 34 tests pass with the pinned xdist config in /app/backend/pytest.ini. Iteration_3 features are fully verified: /api/stats, /api/analyze/demo (real gpt-5.4 vision + storage), is_favorite toggle + stats recompute, /api/analysis/{id}/share, /api/public/component/{share_id}, /api/public/image/{share_id}. Frontend testids present and functional: stats-bar, demo-btn, favorite-btn, share-btn, history-search, filter-category, filter-sort, filter-fav, compare-toggle, compare-select, open-compare, compare-modal, sound-toggle, footer-credit. Note: AuthContext runs on public /c/:shareId route causing an expected but noisy 401 on /api/auth/me — main agent may want to gate that call to non-public routes.",
+  "rca of the issue": "No production bug found this iteration. Only test-file fix: /api/ root health message returns 'ScanRescue API' (rebranded from CompoScan) — updated the assertion in test_root_health from 'CompoScan API' to 'ScanRescue API'."
+}

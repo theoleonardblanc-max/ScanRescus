@@ -7,6 +7,12 @@ module.exports = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        display: ['Zen Dots', 'sans-serif'],
+        head: ['Rajdhani', 'sans-serif'],
+        body: ['Outfit', 'sans-serif'],
+        data: ['IBM Plex Mono', 'monospace'],
+      },
       borderRadius: {
         lg: 'var(--radius)',
         md: 'calc(var(--radius) - 2px)',
@@ -52,6 +58,12 @@ module.exports = {
           '3': 'hsl(var(--chart-3))',
           '4': 'hsl(var(--chart-4))',
           '5': 'hsl(var(--chart-5))'
+        },
+        neon: {
+          cyan: '#00F0FF',
+          crimson: '#FF2A42',
+          purple: '#B026FF',
+          yuzu: '#FDE047',
         }
       },
       keyframes: {

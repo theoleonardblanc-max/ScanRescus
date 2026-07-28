@@ -87,7 +87,7 @@ def other_client():
 def test_root_health(anon):
     r = anon.get(f'{BASE_URL}/api/')
     assert r.status_code == 200
-    assert r.json().get('message') == 'CompoScan API'
+    assert r.json().get('message') == 'ScanRescue API'
 
 
 # ---------- Auth ----------
@@ -304,3 +304,166 @@ def test_logout_clears_session(auth_client):
     assert r.status_code == 200
     r2 = s.get(f'{BASE_URL}/api/auth/me')
     assert r2.status_code == 401
+
+
+# ---------- Iteration 3: Stats / Demo / Favorite / Share / Public ----------
+@pytest.fixture(scope='module')
+def iter3_client():
+    """Fresh user for iteration_3 tests (kept independent from session-scoped auth_client)."""
+    s = requests.Session()
+    s.headers.update({'Content-Type': 'application/json'})
+    email = f"iter3_{uuid.uuid4().hex[:8]}@compotest.example.com"
+    r = s.post(f'{BASE_URL}/api/auth/register', json={
+        'email': email, 'password': 'test1234', 'name': 'Iter3 User'
+    })
+    assert r.status_code == 200, r.text
+    return s, r.json()
+
+
+@pytest.fixture(scope='module')
+def iter3_analysis(iter3_client, image_data_url):
+    s, _ = iter3_client
+    r = s.post(f'{BASE_URL}/api/analyze', json={'image_base64': image_data_url}, timeout=180)
+    assert r.status_code == 200, f'analyze failed: {r.status_code} {r.text[:500]}'
+    return r.json()
+
+
+def test_stats_requires_auth():
+    r = requests.get(f'{BASE_URL}/api/stats')
+    assert r.status_code == 401
+
+
+def test_stats_returns_expected_shape(iter3_client, iter3_analysis):
+    s, _ = iter3_client
+    r = s.get(f'{BASE_URL}/api/stats')
+    assert r.status_code == 200, r.text
+    data = r.json()
+    for key in ('count', 'total_value', 'favorites', 'categories'):
+        assert key in data, f'missing {key}'
+    assert isinstance(data['count'], int) and data['count'] >= 1
+    assert isinstance(data['total_value'], (int, float)) and data['total_value'] >= 0
+    assert isinstance(data['favorites'], int)
+    assert isinstance(data['categories'], dict)
+
+
+def test_favorite_toggle_persists_and_updates_stats(iter3_client, iter3_analysis):
+    s, _ = iter3_client
+    aid = iter3_analysis['id']
+    # Read initial stats
+    stats_before = s.get(f'{BASE_URL}/api/stats').json()
+    fav_before = stats_before['favorites']
+
+    # Toggle favorite ON
+    r = s.put(f'{BASE_URL}/api/analysis/{aid}', json={'is_favorite': True})
+    assert r.status_code == 200, r.text
+    updated = r.json()
+    assert updated['is_favorite'] is True
+
+    # Verify persistence via history
+    hist = s.get(f'{BASE_URL}/api/history').json()
+    found = next((i for i in hist if i['id'] == aid), None)
+    assert found is not None and found['is_favorite'] is True
+
+    # Verify stats reflects the change
+    stats_after = s.get(f'{BASE_URL}/api/stats').json()
+    assert stats_after['favorites'] == fav_before + 1
+
+    # Toggle OFF
+    r2 = s.put(f'{BASE_URL}/api/analysis/{aid}', json={'is_favorite': False})
+    assert r2.status_code == 200
+    assert r2.json()['is_favorite'] is False
+
+
+def test_update_price_recomputes_price_value(iter3_client, iter3_analysis):
+    s, _ = iter3_client
+    aid = iter3_analysis['id']
+    r = s.put(f'{BASE_URL}/api/analysis/{aid}', json={'price_estimate': '20 - 40 €'})
+    assert r.status_code == 200
+    doc = r.json()
+    assert doc.get('price_value') == 30.0, f'expected 30.0 got {doc.get("price_value")}'
+
+
+def test_demo_endpoint_analyzes_sample(iter3_client):
+    """POST /api/analyze/demo downloads server-side image, runs real gpt-5.4 vision, saves + returns."""
+    s, _ = iter3_client
+    r = s.post(f'{BASE_URL}/api/analyze/demo', timeout=180)
+    assert r.status_code == 200, f'demo failed: {r.status_code} {r.text[:500]}'
+    doc = r.json()
+    for key in ('id', 'name', 'category', 'price_estimate', 'description', 'confidence', 'image_url', 'user_id'):
+        assert key in doc, f'demo missing {key}'
+    assert doc['name'].strip() and doc['name'].lower() != 'composant inconnu', (
+        f'demo AI did not identify a component: {doc}'
+    )
+    # Should be saved -> visible in history
+    hist = s.get(f'{BASE_URL}/api/history').json()
+    ids = [i['id'] for i in hist]
+    assert doc['id'] in ids
+
+
+def test_demo_requires_auth():
+    fresh = requests.Session()
+    r = fresh.post(f'{BASE_URL}/api/analyze/demo')
+    assert r.status_code == 401
+
+
+def test_share_returns_share_id_and_is_stable(iter3_client, iter3_analysis):
+    s, _ = iter3_client
+    aid = iter3_analysis['id']
+    r = s.post(f'{BASE_URL}/api/analysis/{aid}/share')
+    assert r.status_code == 200, r.text
+    sid1 = r.json().get('share_id')
+    assert isinstance(sid1, str) and len(sid1) >= 6
+    # Second call must return the SAME share_id (stable link)
+    r2 = s.post(f'{BASE_URL}/api/analysis/{aid}/share')
+    assert r2.status_code == 200
+    assert r2.json()['share_id'] == sid1
+
+
+def test_share_other_user_forbidden(other_client, iter3_analysis):
+    s, _ = other_client
+    r = s.post(f'{BASE_URL}/api/analysis/{iter3_analysis["id"]}/share')
+    assert r.status_code == 404
+
+
+def test_public_component_is_readable_without_auth(iter3_client, iter3_analysis):
+    s, _ = iter3_client
+    # Ensure share exists
+    share = s.post(f'{BASE_URL}/api/analysis/{iter3_analysis["id"]}/share').json()
+    share_id = share['share_id']
+
+    # Anonymous access
+    anon = requests.Session()
+    r = anon.get(f'{BASE_URL}/api/public/component/{share_id}')
+    assert r.status_code == 200, r.text
+    data = r.json()
+    for key in ('name', 'category', 'price_estimate', 'description', 'confidence', 'image_url'):
+        assert key in data
+    assert data['name'].strip()
+    # image_url must point at public image route (or empty if storage failed)
+    if data['image_url']:
+        assert data['image_url'] == f'/api/public/image/{share_id}'
+
+
+def test_public_component_unknown_share_id_404():
+    anon = requests.Session()
+    r = anon.get(f'{BASE_URL}/api/public/component/does-not-exist-xyz')
+    assert r.status_code == 404
+
+
+def test_public_image_serves_bytes_without_auth(iter3_client, iter3_analysis):
+    s, _ = iter3_client
+    share = s.post(f'{BASE_URL}/api/analysis/{iter3_analysis["id"]}/share').json()
+    share_id = share['share_id']
+
+    anon = requests.Session()
+    r = anon.get(f'{BASE_URL}/api/public/image/{share_id}')
+    assert r.status_code == 200, r.text
+    assert len(r.content) > 100
+    assert r.headers.get('content-type', '').startswith('image/')
+
+
+def test_public_image_unknown_share_id_404():
+    anon = requests.Session()
+    r = anon.get(f'{BASE_URL}/api/public/image/does-not-exist-xyz')
+    assert r.status_code == 404
+
