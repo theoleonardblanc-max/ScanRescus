@@ -6,36 +6,47 @@
 ## User Choices
 - Cible: composants électroniques + pièces informatiques
 - IA: OpenAI GPT vision (gpt-5.4) via EMERGENT_LLM_KEY
-- "Modifier": pouvoir modifier les résultats de l'IA (nom, prix, description)
-- Historique sauvegardé: oui
-- Style: moderne / high-tech (sombre, néon)
+- Résultats modifiables (nom, prix, description)
+- Historique sauvegardé (par utilisateur)
+- Style: gaming néon RGB (cyan/violet/rose cyberpunk)
+- Auth: email/mot de passe + Google (les deux)
+- Recherche de prix: offres générées par IA + boutons de recherche Amazon/LDLC/Google Shopping
+- Détection multi-composants: NON
+- Export PDF: OUI
+- Stockage images: object storage (pas de base64 en DB)
 
 ## Architecture
-- Backend: FastAPI + MongoDB (Motor). emergentintegrations LlmChat, modèle openai gpt-5.4 vision.
-- Frontend: React 19 + Tailwind + shadcn/ui + framer-motion + sonner. Police Unbounded/JetBrains Mono.
-- Pas d'authentification (outil public).
+- Backend: FastAPI + MongoDB (Motor). emergentintegrations LlmChat gpt-5.4 (vision + offres). Emergent Object Storage. Auth par session_token (cookie httpOnly + Bearer fallback), bcrypt, Google via Emergent Auth.
+- Frontend: React 19 + Tailwind + shadcn/ui + framer-motion + sonner + jsPDF. Fonts Unbounded / Orbitron / JetBrains Mono. Thème néon RGB.
 
 ## Endpoints
-- POST /api/analyze  -> analyse image base64, renvoie & sauvegarde {name, category, price_estimate, description, confidence, image_base64}
-- GET /api/history   -> liste des analyses (récentes d'abord)
-- PUT /api/analysis/{id} -> édition des champs
-- DELETE /api/analysis/{id} -> suppression
+- Auth: POST /api/auth/register, /api/auth/login, /api/auth/google/session, GET /api/auth/me, POST /api/auth/logout
+- POST /api/analyze (vision + upload storage)
+- GET /api/history (scoped user)
+- PUT /api/analysis/{id}, DELETE /api/analysis/{id}
+- POST /api/analysis/{id}/offers (offres IA)
+- GET /api/files/{path} (image depuis storage)
 
 ## User Personas
-- Theo (lycéen, projet bac) et toute personne voulant identifier/estimer un composant à partir d'une photo.
+- Theo (lycéen, projet bac) et utilisateurs voulant identifier/estimer/comparer des composants via photo.
 
-## Implemented (2026-07-28)
-- Upload/drag&drop + capture photo, analyse IA temps réel avec animation de scan.
-- Résultat éditable inline (nom, catégorie, prix, description) avec sauvegarde.
-- Historique en grille cliquable (recharge le résultat).
-- Footer: "fait par theo pour le bac 2026-2027".
-- Testé de bout en bout: 100% backend + frontend.
+## Implemented
+### 2026-07-28 (MVP)
+- Upload photo → analyse IA (nom/prix/description/confiance), résultat éditable, historique, footer credit.
+### 2026-07-28 (Iteration 2)
+- Comptes utilisateurs: email/mot de passe + Google login.
+- Refonte visuelle gaming néon RGB (blobs animés, glow, scanline, grille).
+- Import de FICHIER en plus de la photo.
+- Recherche du meilleur prix: 4 offres générées par IA + boutons Amazon/LDLC/Google Shopping.
+- Export PDF de la fiche composant (jsPDF).
+- Images stockées en object storage (image_url servi via /api/files).
+- Historique isolé par utilisateur. Testé 100% (22/22 backend, 9/9 frontend).
 
 ## Backlog
-- P1: Stocker l'image en object storage/thumbnail au lieu de base64 en DB (réponses /history volumineuses).
-- P2: Pagination de l'historique.
-- P2: DELETE -> 404 si id inexistant.
-- P2: Restreindre CORS_ORIGINS.
+- P2: /api/files auth via URL signée courte au lieu de ?auth= (le token apparaît dans les logs).
+- P2: logout delete_cookie avec secure/samesite/path identiques.
+- P2: init_storage sous asyncio.Lock; passer requests -> httpx async.
+- P3: gestion multi-pages PDF pour longues descriptions.
 
 ## Next Tasks
-- Selon retours de Theo (améliorations UI, export PDF, comparaison de prix, multi-composants par photo).
+- Selon retours de Theo (comparaison de plusieurs composants, partage de fiche, dashboard stats).

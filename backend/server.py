@@ -356,7 +356,7 @@ async def get_offers(analysis_id: str, request: Request):
     except Exception as e:
         logger.exception("Erreur offres IA")
         raise HTTPException(status_code=502, detail=f"Erreur génération des offres: {str(e)}")
-    await db.analyses.update_one({"id": analysis_id}, {"$set": {"offers": offers}})
+    await db.analyses.update_one({"id": analysis_id, "user_id": user["user_id"]}, {"$set": {"offers": offers}})
     return {"offers": offers}
 
 
