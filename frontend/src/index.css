@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Unbounded:wght@300;500;700;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Orbitron:wght@500;700;900&family=Unbounded:wght@300;500;700;900&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -9,82 +9,95 @@ body {
     font-family: 'JetBrains Mono', monospace;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background-color: #05050A;
+    background-color: #05030F;
+    overflow-x: hidden;
 }
 
-.font-display {
-    font-family: 'Unbounded', sans-serif;
+.font-display { font-family: 'Unbounded', sans-serif; }
+.font-tech { font-family: 'Orbitron', sans-serif; }
+
+::selection { background: #22D3EE; color: #05030F; }
+
+::-webkit-scrollbar { width: 10px; }
+::-webkit-scrollbar-track { background: #05030F; }
+::-webkit-scrollbar-thumb { background: linear-gradient(#22D3EE, #A855F7); border-radius: 8px; }
+
+/* Animated RGB grid background */
+.rgb-grid {
+    background-image:
+        linear-gradient(rgba(34,211,238,0.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(168,85,247,0.06) 1px, transparent 1px);
+    background-size: 44px 44px;
 }
 
-::selection {
-    background: #22D3EE;
-    color: #05050A;
+.neon-text-cyan { text-shadow: 0 0 8px rgba(34,211,238,0.8), 0 0 24px rgba(34,211,238,0.4); }
+.neon-text-purple { text-shadow: 0 0 8px rgba(168,85,247,0.8), 0 0 24px rgba(168,85,247,0.4); }
+.neon-text-pink { text-shadow: 0 0 8px rgba(236,72,153,0.8), 0 0 24px rgba(236,72,153,0.4); }
+
+.neon-border {
+    border: 1px solid rgba(34,211,238,0.4);
+    box-shadow: 0 0 12px rgba(34,211,238,0.25), inset 0 0 12px rgba(34,211,238,0.08);
 }
 
-::-webkit-scrollbar {
-    width: 10px;
+@keyframes rgb-shift {
+    0% { filter: hue-rotate(0deg); }
+    100% { filter: hue-rotate(360deg); }
 }
-::-webkit-scrollbar-track {
-    background: #05050A;
-}
-::-webkit-scrollbar-thumb {
-    background: #1f2937;
-    border-radius: 8px;
-}
-::-webkit-scrollbar-thumb:hover {
-    background: #22D3EE;
-}
+.rgb-anim { animation: rgb-shift 6s linear infinite; }
 
 @keyframes fade-up {
-    from { opacity: 0; transform: translateY(16px); }
+    from { opacity: 0; transform: translateY(18px); }
     to { opacity: 1; transform: translateY(0); }
 }
-.animate-fade-up {
-    animation: fade-up 0.5s ease forwards;
+.animate-fade-up { animation: fade-up 0.5s ease forwards; }
+
+@keyframes float-blob {
+    0%, 100% { transform: translate(0,0) scale(1); }
+    50% { transform: translate(30px,-30px) scale(1.1); }
 }
+.animate-blob { animation: float-blob 12s ease-in-out infinite; }
+
+@keyframes scanline {
+    0% { top: 0; } 100% { top: 100%; }
+}
+.scanline { animation: scanline 1.6s linear infinite; }
 
 @keyframes pulse-glow {
-    0%, 100% { box-shadow: 0 0 8px rgba(34,211,238,0.3); }
-    50% { box-shadow: 0 0 24px rgba(34,211,238,0.6); }
+    0%, 100% { box-shadow: 0 0 10px rgba(34,211,238,0.5); }
+    50% { box-shadow: 0 0 28px rgba(168,85,247,0.7); }
 }
-.animate-pulse-glow {
-    animation: pulse-glow 2s ease-in-out infinite;
-}
+.animate-pulse-glow { animation: pulse-glow 2.5s ease-in-out infinite; }
 
 @media (prefers-reduced-motion: reduce) {
-    .animate-fade-up, .animate-pulse-glow { animation: none; }
+    .animate-fade-up, .animate-blob, .scanline, .animate-pulse-glow, .rgb-anim { animation: none; }
 }
 
 @layer base {
     :root {
-        --background: 240 33% 3%;
+        --background: 255 60% 4%;
         --foreground: 210 40% 98%;
-        --card: 240 14% 8%;
+        --card: 260 30% 8%;
         --card-foreground: 210 40% 98%;
-        --popover: 240 14% 8%;
+        --popover: 260 30% 8%;
         --popover-foreground: 210 40% 98%;
-        --primary: 187 85% 53%;
-        --primary-foreground: 240 33% 3%;
+        --primary: 187 90% 55%;
+        --primary-foreground: 255 60% 4%;
         --secondary: 271 91% 65%;
         --secondary-foreground: 210 40% 98%;
-        --muted: 240 10% 14%;
-        --muted-foreground: 215 20% 65%;
-        --accent: 240 10% 14%;
+        --muted: 260 20% 15%;
+        --muted-foreground: 250 15% 68%;
+        --accent: 300 80% 60%;
         --accent-foreground: 210 40% 98%;
         --destructive: 0 72% 51%;
         --destructive-foreground: 210 40% 98%;
-        --border: 240 10% 18%;
-        --input: 240 10% 18%;
-        --ring: 187 85% 53%;
-        --radius: 0.5rem;
+        --border: 260 30% 20%;
+        --input: 260 30% 18%;
+        --ring: 187 90% 55%;
+        --radius: 0.65rem;
     }
 }
 
 @layer base {
-    * {
-        @apply border-border;
-    }
-    body {
-        @apply bg-background text-foreground;
-    }
+    * { @apply border-border; }
+    body { @apply bg-background text-foreground; }
 }

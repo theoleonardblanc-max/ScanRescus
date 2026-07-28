@@ -1,0 +1,44 @@
+{
+  "summary": "Full backend + frontend regression of CompoScan iteration_2 (with auth, object storage, PDF export, offers). 22/22 pytest backend tests pass including real gpt-5.4 vision analyze, real gpt-5.4 offers (4 realistic offers), object-storage upload/download via /api/files (cookie + ?auth= token), cross-user history/offer/update isolation, register/login/duplicate/wrong-password/me/logout, google session missing/invalid handling, Bearer-token fallback, DELETE 404. Full Playwright UI flow passes (9/9): register -> home dashboard -> file upload -> analyze (identified 'Carte graphique NVIDIA GeForce RTX 2080', 180-300 €, confidence Élevée) -> generate 4 offers + shop buttons -> edit + save persists -> jsPDF export downloads .pdf -> history item present -> logout returns to Auth. Footer credit exact. No blockers.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/files/{path}", "issue": "?auth= session token is passed in URL query — will land in access logs and browser history. Consider header-only or short-lived signed URL."},
+      {"endpoint": "POST /api/auth/logout", "issue": "Cookie is set with SameSite=None; delete_cookie must specify same samesite/secure/path or some browsers will not clear it. Session doc IS removed server-side so this is cosmetic."},
+      {"endpoint": "POST /api/auth/google/session", "issue": "Trusts session_token returned by upstream OAuth response and inserts it directly. If upstream ever returns a duplicate token it will still upsert into user_sessions without a uniqueness check."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_component_detector.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "None blocking. Optional: move file auth token from ?auth= to a signed short-lived URL to avoid leaking session_token in server logs.",
+    "Optional: tighten delete_cookie in logout to include secure=True, samesite='none', path='/' so all browsers actually drop the cookie client-side."
+  ],
+  "critical_code_review_comments": [
+    "server.py: analyze() base64-decodes the entire payload before storing in object storage but keeps NO fallback/link if put_object fails — the analysis doc is still saved with an empty image_url. Downstream the frontend will silently show a broken image tile in history. Consider deleting the analysis doc, retrying, or surfacing a warning to the client.",
+    "server.py: storage_key is a module-level global lazily-initialized without a lock. In an async server with concurrent first requests, init_storage() could be called multiple times. Wrap init in an asyncio.Lock or an asyncio task at startup.",
+    "server.py: requests.post/get in put_object/get_object/google_session are SYNC calls inside async endpoints — they block the event loop. For low-throughput MVP fine, but move to httpx.AsyncClient for scale.",
+    "server.py: /api/analysis/{id}/offers updates the DB with $set: {offers:offers} without matching user_id in the update filter (line ~359). It DOES check ownership before regeneration, but the update itself only filters by id — a race where the doc is deleted between GET and $set would still write an orphan. Add user_id to the update filter.",
+    "server.py: EMERGENT_LLM_KEY is used directly in requests to STORAGE_URL as 'emergent_key' body — if the key rotates, storage_key becomes stale for the process lifetime. Refresh on 401/403 from storage.",
+    "AuthContext.jsx: axios.defaults.withCredentials=true is set globally — any 3rd-party axios usage in the app will also send cookies. Consider scoping to a dedicated axios instance.",
+    "Home.jsx: exportPdf renders body text via doc.text without page-break handling; long descriptions will overflow off the page. Use doc.splitTextToSize plus multi-page logic (returned line array length > page height).",
+    "server.py: pytest.ini pins DB_NAME=test_database in backend/.env — same DB is used for real data and tests. TEST_ prefix helps but there is no cleanup fixture; test users accumulate. Add a session-scoped teardown to db.users.delete_many({email: /@compotest.example.com$/}) etc."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_component_detector.py"
+  ],
+  "success_rate": {"backend": "100% (22/22)", "frontend": "100% (9/9)"},
+  "test_credentials": "Created dynamic test users of the form test_<hex>@compotest.example.com / test1234 via /api/auth/register. Fixed test user theo@test.com / test1234 also confirmed to work.",
+  "seed_data_creation": "None additional. Reused /app/test_fixtures/cpu.jpg (real Unsplash CPU/GPU photo) from previous iteration.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All 22 pytest tests pass with `python -m pytest tests/test_component_detector.py -v -n 0`. Run with -n 0 (serial) because session fixtures share auth state; pytest.ini's xdist loadscope keeps them in one worker but serial is safest. Emergent LLM key + gpt-5.4 vision + offers work reliably (~14s total AI runtime for full suite). Object storage put/get through /api/files/{path} works. Frontend URL: https://component-detector-3.preview.emergentagent.com. All data-testids listed in review_request are present and functional.",
+  "rca of the issue": "No production bug found. Test-suite-only fix: pydantic EmailStr rejects the .local TLD as a reserved name (RFC-compliant), so initial test emails failed with 422. Switched to @compotest.example.com. Also fixed a test-isolation issue where the session-scoped `anon` requests.Session picked up cookies from the login-success test and broke the auth-gating check on /api/analyze; switched that test to a fresh Session()."
+}
