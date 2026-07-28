@@ -378,7 +378,7 @@ async def download_file(path: str, request: Request, auth: str = Query(None)):
 
 @api_router.get("/")
 async def root():
-    return {"message": "CompoScan API"}
+    return {"message": "ScanRescue API"}
 
 
 app.include_router(api_router)

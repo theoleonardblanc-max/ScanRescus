@@ -23,7 +23,7 @@ export default function Auth() {
     try {
       if (mode === "login") await login(form.email, form.password);
       else await register(form.name, form.email, form.password);
-      toast.success("Bienvenue sur CompoScan !");
+      toast.success("Bienvenue sur ScanRescue !");
     } catch (e) {
       toast.error(formatApiError(e.response?.data?.detail));
     } finally {
@@ -43,7 +43,7 @@ export default function Auth() {
           <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#22D3EE] to-[#A855F7] flex items-center justify-center animate-pulse-glow mb-4">
             <ScanLine className="w-7 h-7 text-black" />
           </div>
-          <h1 className="font-tech text-2xl font-900 tracking-widest neon-text-cyan">COMPOSCAN</h1>
+          <h1 className="font-tech text-2xl font-900 tracking-widest neon-text-cyan">SCAN<span className="text-[#A855F7] neon-text-purple">RESCUE</span></h1>
           <p className="text-[#8B85A8] text-sm mt-1">Détection de composants par IA</p>
         </div>
 

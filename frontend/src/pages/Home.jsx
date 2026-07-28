@@ -130,7 +130,7 @@ function ResultCard({ item, preview, onSave, onDelete }) {
     const doc = new jsPDF();
     doc.setFillColor(5, 3, 15); doc.rect(0, 0, 210, 297, "F");
     doc.setTextColor(34, 211, 238); doc.setFontSize(22);
-    doc.text("CompoScan — Fiche composant", 15, 22);
+    doc.text("ScanRescue — Fiche composant", 15, 22);
     doc.setDrawColor(168, 85, 247); doc.line(15, 27, 195, 27);
     doc.setTextColor(255, 255, 255); doc.setFontSize(16);
     doc.text(item.name || "", 15, 42);
@@ -145,7 +145,7 @@ function ResultCard({ item, preview, onSave, onDelete }) {
     doc.setFontSize(11); doc.setTextColor(200, 200, 215);
     doc.text(doc.splitTextToSize(item.description || "-", 180), 15, 94);
     doc.setTextColor(120, 120, 150); doc.setFontSize(9);
-    doc.text("fait par theo pour le bac 2026-2027", 15, 285);
+    doc.text("fait par theo pour le bac 2026-2027 — ScanRescue", 15, 285);
     doc.save(`compo-${(item.name || "fiche").replace(/\s+/g, "-").toLowerCase()}.pdf`);
   };
 
@@ -274,7 +274,7 @@ export default function Home() {
             <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-[#22D3EE] to-[#A855F7] flex items-center justify-center animate-pulse-glow">
               <ScanLine className="w-5 h-5 text-black" />
             </div>
-            <span className="font-tech font-900 tracking-widest text-lg neon-text-cyan">COMPO<span className="text-[#A855F7] neon-text-purple">SCAN</span></span>
+            <span className="font-tech font-900 tracking-widest text-lg neon-text-cyan">SCAN<span className="text-[#A855F7] neon-text-purple">RESCUE</span></span>
           </div>
           <div className="flex items-center gap-4">
             <span className="hidden sm:flex items-center gap-2 text-xs text-[#8B85A8]">
@@ -371,7 +371,7 @@ export default function Home() {
           <p data-testid="footer-credit" className="font-display text-xl md:text-2xl font-bold tracking-tight text-white neon-text-cyan">
             fait par theo pour le bac 2026-2027
           </p>
-          <p className="text-[#8B85A8] text-sm">CompoScan — Détection de composants par IA</p>
+          <p className="text-[#8B85A8] text-sm">ScanRescue — Détection de composants par IA</p>
         </div>
       </footer>
     </div>
