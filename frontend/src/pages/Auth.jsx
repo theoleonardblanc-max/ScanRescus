@@ -9,8 +9,8 @@ from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Header
 from starlette.responses import Response as StarletteResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-# Import nécessaire pour LlmChat et ImageContent (déjà dans ton code initial)
-from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent 
+# Import Emergent pour la vision
+from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
 import re
 import json
 import base64
@@ -33,7 +33,7 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Configuration Emergent / OpenAI
+# Configuration IA
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
 APP_NAME = "compo-scan"
 STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
@@ -51,7 +51,7 @@ def init_storage():
     if storage_key:
         return storage_key
     if not EMERGENT_LLM_KEY:
-        raise Exception("EMERGENT_LLM_KEY non configurée pour le stockage")
+        raise Exception("EMERGENT_LLM_KEY non configurée")
     resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_LLM_KEY}, timeout=30)
     resp.raise_for_status()
     storage_key = resp.json()["storage_key"]
@@ -249,34 +249,39 @@ OFFERS_PROMPT = (
 )
 
 
-# ---- NOUVEAU MOTEUR DE NETTOYAGE JSON ROBUSTE ----
-def _clean_and_parse_json(text: str):
-    """Tente de nettoyer et parser une réponse JSON potentiellement corrompue par l'IA."""
+# ---- NOUVELLE FONCTION DE NETTOYAGE ROBUSTE ----
+def _extract_and_parse_json(text: str):
+    """
+    Extrait et parse le JSON d'une réponse potentiellement polluée par l'IA.
+    Tolère le markdown ```json et le texte autour de l'objet.
+    """
     text = text.strip()
     
-    # 1. Essai standard
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    # 2. Extraction via regex (cherche { ... } ou [ ... ])
-    m = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
-    if m:
-        candidate = m.group(1)
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            # 3. Dernière tentative : réparation basique (remplacement ' par ")
-            repaired = candidate.replace("'", '"')
-            try:
-                return json.loads(repaired)
-            except json.JSONDecodeError:
-                # Erreur finale, on remonte le texte fautif
-                raise Exception(f"Impossible de parser le JSON de l'IA, format invalide : {candidate[:50]}...")
+    # Tente de trouver un bloc JSON entre ``` (avec ou sans l'étiquette json)
+    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+    if json_match:
+        clean_text = json_match.group(1)
     else:
-        # Erreur finale, aucune structure détectée
-        raise Exception(f"Aucune structure JSON trouvée dans la réponse de l'IA : {text[:50]}...")
+        # Tente de trouver le premier '{' et le dernier '}' si pas de markdown
+        braces_match = re.search(r'(\{.*?\})', text, re.DOTALL)
+        if braces_match:
+            clean_text = braces_match.group(1)
+        else:
+            clean_text = text # Laisse tel quel, provoquera une erreur de parsing
+
+    try:
+        return json.loads(clean_text)
+    except json.JSONDecodeError as e:
+        logger.error(f"Erreur de parsing JSON. Texte brut (tronqué): {text[:100]}... Erreur: {e}")
+        # Retourne un objet d'erreur standardisé au lieu de planter
+        return {
+            "name": "Erreur d'analyse de l'IA",
+            "category": "Erreur",
+            "price_estimate": "N/A",
+            "description": f"L'IA a répondu mais n'a pas fourni un format JSON valide. Réponse brute: {text[:200]}...",
+            "confidence": "Faible"
+        }
+# --------------------------------------------------
 
 
 def _strip_data_url(b64: str) -> str:
@@ -303,25 +308,24 @@ async def _llm_call(system: str, text: str, image_b64: str = None):
     return await chat.send_message(msg)
 
 
-# ---- CŒUR DE L'ANALYSE MODIFIÉ POUR UTILISER LE NETTOYEUR ROBUSTE ----
 async def _run_analysis(image_full_b64: str, user: dict) -> dict:
     if not EMERGENT_LLM_KEY:
         raise HTTPException(status_code=500, detail="Clé IA non configurée")
     
     try:
-        # Appel du modèle Vision
         raw = await _llm_call(SYSTEM_PROMPT, "Identifie le composant sur cette photo et renvoie le JSON demandé.", image_full_b64)
     except Exception as e:
         logger.exception("Erreur appel IA API")
         raise HTTPException(status_code=502, detail=f"Erreur de communication avec l'IA: {str(e)}")
 
     raw = raw if isinstance(raw, str) else str(raw)
-    logger.info(f"Réponse brute de l'IA (GPT-5.4) : {raw[:150]}...") # Log pour debug
+    logger.info(f"Réponse brute de l'IA (GPT-5.4) : {raw[:150]}...")
 
-    # TENTATIVE DE PARSING AVEC NETTOYAGE (NE PLANTE PLUS L'APPLICATION)
+    # UTILISATION DU NETTOYEUR ICI
+    parsed = _extract_and_parse_json(raw)
+
+    image_url = ""
+    storage_path = ""
+    clean = _strip_data_url(image_full_b64)
     try:
-        parsed = _clean_and_parse_json(raw)
-        logger.info(f"JSON parsés avec succès : {parsed.get('name')}")
-    except Exception as e:
-        logger.error(f"Erreur critique de parsing JSON IA : {e}")
-        # GESTION D'ERREUR SILENCIEUSE : L'IA a buggé, on crée un objet d'erreur propre pour l'UI
+        img_bytes = base64.b64
