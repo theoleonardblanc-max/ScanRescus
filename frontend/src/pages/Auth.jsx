@@ -104,7 +104,6 @@ window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComp
       </div>
     </div>
   );
-}
 function IconInput({ icon: Icon, testid, ...props }) {
   return (
     <div className="relative">
