@@ -1,10 +1,8 @@
 import { createContext, useContext, useState, useEffect, useCallback } from "react";
 import axios from "axios";
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = "https://scanrescue-backend.onrender.com";
 export const API = `${BACKEND_URL}/api`;
 export const ASSET = BACKEND_URL;
-
 axios.defaults.withCredentials = true;
 
 const AuthContext = createContext(null);
