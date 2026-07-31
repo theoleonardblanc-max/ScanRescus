@@ -18,9 +18,7 @@ export default function Auth() {
   const googleLogin = () => {
     sfx.click();
     // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-    const redirectUrl = window.location.origin + "/";
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-  };
+window.location.href = "https://scanrescue-backend.onrender.com/api/auth/google";
 
   const submit = async (mode) => {
     setBusy(true);
