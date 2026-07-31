@@ -9,6 +9,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Header
 from starlette.responses import Response as StarletteResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+# Import des outils d'Emergent Integrations
 from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
 import re
 import json
@@ -32,7 +33,7 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Configuration IA
+# Configuration IA et Storage
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
 APP_NAME = "compo-scan"
 STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
@@ -223,6 +224,8 @@ async def logout(request: Request, response: Response):
 
 
 # ---------- AI ----------
+
+# ---- Ce qu'on demande à l'IA (réponse en JSON strict) ----
 SYSTEM_PROMPT = (
     "Tu es un expert en composants électroniques et pièces informatiques. "
     "À partir d'une photo, identifie le composant principal visible. "
@@ -248,29 +251,17 @@ OFFERS_PROMPT = (
 )
 
 
-def _extract_and_parse_json(text: str):
+# ---- Récupère proprement le JSON renvoyé par l'IA ----
+def _extract_json(text: str):
     text = text.strip()
-    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
-    if json_match:
-        clean_text = json_match.group(1)
+    m = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+    if m:
+        text = m.group(1)
     else:
-        braces_match = re.search(r'(\{.*?\})', text, re.DOTALL)
-        if braces_match:
-            clean_text = braces_match.group(1)
-        else:
-            clean_text = text
-
-    try:
-        return json.loads(clean_text)
-    except json.JSONDecodeError as e:
-        logger.error(f"Erreur de parsing JSON. Texte brut (tronqué): {text[:100]}... Erreur: {e}")
-        return {
-            "name": "Erreur d'analyse de l'IA",
-            "category": "Erreur",
-            "price_estimate": "N/A",
-            "description": f"L'IA a répondu mais n'a pas fourni un format JSON valide. Réponse brute: {text[:200]}...",
-            "confidence": "Faible"
-        }
+        m2 = re.search(r"[\{\[].*[\}\]]", text, re.DOTALL)
+        if m2:
+            text = m2.group(0)
+    return json.loads(text)
 
 
 def _strip_data_url(b64: str) -> str:
@@ -290,223 +281,43 @@ def parse_price(text: str) -> float:
 DEMO_IMAGE_URL = "https://images.unsplash.com/photo-1591799264318-7e6ef8ddb7ea?crop=entropy&cs=srgb&fm=jpg&w=1000&q=80"
 
 
+# ---- Appel basique vers l'IA ----
 async def _llm_call(system: str, text: str, image_b64: str = None):
+    # Utilisation du modèle gpt-5.4 comme demandé
     chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"s-{uuid.uuid4()}", system_message=system).with_model("openai", "gpt-5.4")
     files = [ImageContent(image_base64=_strip_data_url(image_b64))] if image_b64 else None
     msg = UserMessage(text=text, file_contents=files) if files else UserMessage(text=text)
     return await chat.send_message(msg)
 
 
-async def _run_analysis(image_full_b64: str, user: dict) -> dict:
-    if not EMERGENT_LLM_KEY:
-        raise HTTPException(status_code=500, detail="Clé IA non configurée")
-    
-    try:
-        raw = await _llm_call(SYSTEM_PROMPT, "Identifie le composant sur cette photo et renvoie le JSON demandé.", image_full_b64)
-    except Exception as e:
-        logger.exception("Erreur appel IA API")
-        raise HTTPException(status_code=502, detail=f"Erreur de communication avec l'IA: {str(e)}")
+# ---- LE CŒUR : envoie l'image à GPT-5.4 (vision) et retourne le résultat structuré ----
+async def detecter_composant(image_base64: str) -> dict:
+    # 1) On crée une session de chat avec le modèle vision d'OpenAI
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"detect-{uuid.uuid4()}",
+        system_message=SYSTEM_PROMPT,
+    ).with_model("openai", "gpt-5.4")
 
+    # 2) On attache l'image (en base64) au message
+    image = ImageContent(image_base64=_strip_data_url(image_base64))
+    message = UserMessage(
+        text="Identifie le composant sur cette photo et renvoie le JSON demandé.",
+        file_contents=[image],
+    )
+
+    # 3) On envoie et on récupère la réponse
+    raw = await chat.send_message(message)
     raw = raw if isinstance(raw, str) else str(raw)
     logger.info(f"Réponse brute de l'IA (GPT-5.4) : {raw[:150]}...")
 
-    parsed = _extract_and_parse_json(raw)
-
-    image_url = ""
-    storage_path = ""
-    clean = _strip_data_url(image_full_b64)
+    # 4) On transforme la réponse en dictionnaire Python
     try:
-        img_bytes = base64.b64decode(clean)
-        storage_path = f"{APP_NAME}/uploads/{user['user_id']}/{uuid.uuid4().hex}.jpg"
-        put_object(storage_path, img_bytes, "image/jpeg")
-        image_url = f"/api/files/{storage_path}"
+        return _extract_json(raw)
     except Exception as e:
-        logger.error(f"Storage upload failed: {e}")
-
-    doc = {
-        "id": str(uuid.uuid4()),
-        "user_id": user["user_id"],
-        "name": parsed.get("name", "Composant inconnu"),
-        "category": parsed.get("category", ""),
-        "price_estimate": parsed.get("price_estimate", ""),
-        "price_value": parse_price(parsed.get("price_estimate", "")),
-        "description": parsed.get("description", ""),
-        "confidence": parsed.get("confidence", ""),
-        "storage_path": storage_path,
-        "image_url": image_url,
-        "offers": [],
-        "is_favorite": False,
-        "share_id": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await db.analyses.insert_one(doc)
-    doc.pop("_id", None)
-    return doc
-
-
-@api_router.post("/analyze")
-async def analyze(req: AnalyzeRequest, request: Request):
-    user = await get_current_user(request)
-    return await _run_analysis(req.image_base64, user)
-
-
-@api_router.post("/analyze/demo")
-async def analyze_demo(request: Request):
-    user = await get_current_user(request)
-    try:
-        r = requests.get(DEMO_IMAGE_URL, timeout=30)
-        r.raise_for_status()
-        b64 = base64.b64encode(r.content).decode("utf-8")
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Impossible de charger l'exemple: {str(e)}")
-    return await _run_analysis(f"data:image/jpeg;base64,{b64}", user)
-
-
-@api_router.get("/stats")
-async def get_stats(request: Request):
-    user = await get_current_user(request)
-    docs = await db.analyses.find({"user_id": user["user_id"]}, {"_id": 0, "price_value": 1, "is_favorite": 1, "category": 1}).to_list(1000)
-    total_value = round(sum(d.get("price_value", 0) or 0 for d in docs), 2)
-    favorites = sum(1 for d in docs if d.get("is_favorite"))
-    categories = {}
-    for d in docs:
-        c = d.get("category") or "Autre"
-        categories[c] = categories.get(c, 0) + 1
-    return {"count": len(docs), "total_value": total_value, "favorites": favorites, "categories": categories}
-
-
-@api_router.get("/history")
-async def get_history(request: Request):
-    user = await get_current_user(request)
-    docs = await db.analyses.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
-    return docs
-
-
-@api_router.put("/analysis/{analysis_id}")
-async def update_analysis(analysis_id: str, update: AnalysisUpdate, request: Request):
-    user = await get_current_user(request)
-    fields = {k: v for k, v in update.model_dump().items() if v is not None}
-    if "price_estimate" in fields:
-        fields["price_value"] = parse_price(fields["price_estimate"])
-    if fields:
-        await db.analyses.update_one({"id": analysis_id, "user_id": user["user_id"]}, {"$set": fields})
-    doc = await db.analyses.find_one({"id": analysis_id, "user_id": user["user_id"]}, {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Analyse introuvable")
-    return doc
-
-
-@api_router.post("/analysis/{analysis_id}/share")
-async def share_analysis(analysis_id: str, request: Request):
-    user = await get_current_user(request)
-    doc = await db.analyses.find_one({"id": analysis_id, "user_id": user["user_id"]}, {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Analyse introuvable")
-    share_id = doc.get("share_id")
-    if not share_id:
-        share_id = uuid.uuid4().hex[:10]
-        await db.analyses.update_one({"id": analysis_id, "user_id": user["user_id"]}, {"$set": {"share_id": share_id}})
-    return {"share_id": share_id}
-
-
-@api_router.get("/public/component/{share_id}")
-async def public_component(share_id: str):
-    doc = await db.analyses.find_one({"share_id": share_id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Fiche introuvable")
-    return {
-        "name": doc.get("name"), "category": doc.get("category"),
-        "price_estimate": doc.get("price_estimate"), "description": doc.get("description"),
-        "confidence": doc.get("confidence"), "offers": doc.get("offers", []),
-        "image_url": f"/api/public/image/{share_id}" if doc.get("storage_path") else "",
-    }
-
-
-@api_router.get("/public/image/{share_id}")
-async def public_image(share_id: str):
-    doc = await db.analyses.find_one({"share_id": share_id}, {"_id": 0, "storage_path": 1})
-    if not doc or not doc.get("storage_path"):
-        raise HTTPException(status_code=404, detail="Image introuvable")
-    try:
-        data, content_type = get_object(doc["storage_path"])
-    except Exception:
-        raise HTTPException(status_code=404, detail="Image introuvable")
-    return StarletteResponse(content=data, media_type=content_type)
-
-
-@api_router.delete("/analysis/{analysis_id}")
-async def delete_analysis(analysis_id: str, request: Request):
-    user = await get_current_user(request)
-    res = await db.analyses.delete_one({"id": analysis_id, "user_id": user["user_id"]})
-    if res.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Analyse introuvable")
-    return {"success": True}
-
-
-@api_router.post("/analysis/{analysis_id}/offers")
-async def get_offers(analysis_id: str, request: Request):
-    user = await get_current_user(request)
-    doc = await db.analyses.find_one({"id": analysis_id, "user_id": user["user_id"]}, {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Analyse introuvable")
-    try:
-        raw = await _llm_call(OFFERS_PROMPT, f"Composant: {doc['name']} ({doc['category']}). Prix estimé: {doc['price_estimate']}. Propose les offres.")
-        raw = raw if isinstance(raw, str) else str(raw)
-        parsed = _extract_and_parse_json(raw)
-        offers = parsed.get("offers", []) if isinstance(parsed, dict) else parsed
-        if not isinstance(offers, list):
-            offers = []
-    except Exception as e:
-        logger.exception("Erreur offres IA")
-        raise HTTPException(status_code=502, detail=f"Erreur génération des offres: {str(e)}")
-    await db.analyses.update_one({"id": analysis_id, "user_id": user["user_id"]}, {"$set": {"offers": offers}})
-    return {"offers": offers}
-
-
-@api_router.get("/files/{path:path}")
-async def download_file(path: str, request: Request, auth: str = Query(None)):
-    token = request.cookies.get("session_token") or auth
-    if not token:
-        raise HTTPException(status_code=401, detail="Non authentifié")
-    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
-    if not session:
-        raise HTTPException(status_code=401, detail="Session invalide")
-    try:
-        data, content_type = get_object(path)
-    except Exception:
-        raise HTTPException(status_code=404, detail="Fichier introuvable")
-    return StarletteResponse(content=data, media_type=content_type)
-
-
-@api_router.get("/")
-async def root():
-    return {"message": "ScanRescue API"}
-
-
-app.include_route(api_router)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.on_event("startup")
-async def startup():
-    await db.users.create_index("email", unique=True)
-    await db.users.create_index("user_id")
-    await db.user_sessions.create_index("session_token")
-    await db.analyses.create_index("user_id")
-    try:
-        init_storage()
-        logger.info("Storage initialized")
-    except Exception as e:
-        logger.error(f"Storage init failed: {e}")
-
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+        logger.error(f"Erreur critique de parsing JSON IA : {e}")
+        return {
+            "name": "Composant non analysé (Erreur GPT)",
+            "category": "Erreur de lecture de l'IA",
+            "price_estimate": "Estimation non disponible",
+            "description": f"L'analyse visuelle a été
