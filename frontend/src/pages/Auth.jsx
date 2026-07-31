@@ -21,6 +21,7 @@ const googleLogin = () => {
   window.location.href = "https://scanrescue-backend.onrender.com/api/auth/google";
 };
 
+
 const submit = async (mode) => 
     setBusy(true);
     try {
