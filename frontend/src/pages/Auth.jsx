@@ -1,483 +1,327 @@
-import React, { useState, useEffect, useRef } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { toast } from "sonner";
-import { 
-  Lock, Mail, User, ArrowRight, Camera, 
-  CheckCircle2, RefreshCw, Terminal, Bot, MessageSquare, Send, ShoppingBag, ExternalLink, Cpu
-} from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { sfx } from "@/lib/sfx";
+from dotenv import load_dotenv
+from pathlib import Path
+import os
 
-const TOKYO_CYBERPUNK_BG = "https://images.unsplash.com/photo-1542051841857-5f90071e7989?q=80&w=2560&auto=format&fit=crop";
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / '.env')
 
-export default function Auth() {
-  const [user, setUser] = useState(() => {
-    const saved = localStorage.getItem("scanrescue_active_user");
-    return saved ? JSON.parse(saved) : null;
-  });
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Header, Query
+from starlette.responses import Response as StarletteResponse
+from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+# Import nécessaire pour LlmChat et ImageContent (déjà dans ton code initial)
+from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent 
+import re
+import json
+import base64
+import logging
+import uuid
+import secrets
+import requests
+import bcrypt
+from pydantic import BaseModel, Field, EmailStr
+from typing import List, Optional
+from datetime import datetime, timezone, timedelta
 
-  const [loading, setLoading] = useState(false);
-  const [form, setForm] = useState({ name: "", email: "", password: "" });
 
-  const [selectedImage, setSelectedImage] = useState(null);
-  const [isScanning, setIsScanning] = useState(false);
-  const [scanResult, setScanResult] = useState(null);
-  const [scanStep, setScanStep] = useState("");
-  
-  const [chatMessages, setChatMessages] = useState([
-    { role: "assistant", text: "Bonjour Théo ! 🤖 Moteur **OpenAI GPT-5.4 Vision** opérationnel via backend Python. Importez n'importe quelle photo de composant : l'IA analyse véritablement le visuel pour retourner un diagnostic structuré." }
-  ]);
-  const [chatInput, setChatInput] = useState("");
-  const chatBottomRef = useRef(null);
-  const fileInputRef = useRef(null);
+# Configuration du logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-  useEffect(() => {
-    chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chatMessages, isScanning]);
+# Initialisation MongoDB
+mongo_url = os.environ['MONGO_URL']
+client = AsyncIOMotorClient(mongo_url)
+db = client[os.environ['DB_NAME']]
 
-  const handleAuth = (mode) => {
-    if (!form.email || !form.password || (mode === "register" && !form.name)) {
-      sfx.error?.();
-      toast.error("Veuillez remplir tous les champs.");
-      return;
-    }
-    setLoading(true);
-    sfx.click?.();
+# Configuration Emergent / OpenAI
+EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
+APP_NAME = "compo-scan"
+STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+EMERGENT_AUTH_SESSION = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 
-    setTimeout(() => {
-      const userData = {
-        name: mode === "register" ? form.name : form.email.split("@")[0],
-        email: form.email,
-        createdAt: new Date().toLocaleDateString()
-      };
-      localStorage.setItem("scanrescue_token", "jwt-token-" + Date.now());
-      localStorage.setItem("scanrescue_active_user", JSON.stringify(userData));
-      
-      setUser(userData);
-      setLoading(false);
-      sfx.success?.();
-      toast.success("Connexion établie avec succès !");
-    }, 700);
-  };
+app = FastAPI()
+api_router = APIRouter(prefix="/api")
 
-  const handleLogout = () => {
-    sfx.click?.();
-    localStorage.removeItem("scanrescue_token");
-    localStorage.removeItem("scanrescue_active_user");
-    setUser(null);
-    setSelectedImage(null);
-    setScanResult(null);
-    toast.info("Déconnexion de la session.");
-  };
+# ---------- Object storage ----------
+storage_key = None
 
-  const handleImageUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const base64String = reader.result;
-      setSelectedImage(base64String);
-      
-      setChatMessages(prev => [
-        ...prev, 
-        { role: "user", text: `[Photo importée : ${file.name}] - Envoi vers le module Python OpenAI GPT-5.4 Vision...` }
-      ]);
+def init_storage():
+    global storage_key
+    if storage_key:
+        return storage_key
+    if not EMERGENT_LLM_KEY:
+        raise Exception("EMERGENT_LLM_KEY non configurée pour le stockage")
+    resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_LLM_KEY}, timeout=30)
+    resp.raise_for_status()
+    storage_key = resp.json()["storage_key"]
+    return storage_key
 
-      callBackendVisionAPI(base64String);
-    };
-    reader.readAsDataURL(file);
-  };
 
-  // Appel réel vers le backend Python qui utilise LlmChat et gpt-5.4
-  const callBackendVisionAPI = async (imageBase64) => {
-    setIsScanning(true);
-    setScanResult(null);
-    sfx.click?.();
+def put_object(path: str, data: bytes, content_type: str) -> dict:
+    key = init_storage()
+    resp = requests.put(f"{STORAGE_URL}/objects/{path}",
+                        headers={"X-Storage-Key": key, "Content-Type": content_type},
+                        data=data, timeout=120)
+    resp.raise_for_status()
+    return resp.json()
 
-    const steps = [
-      "Connexion au réseau neuronal OpenAI GPT-5.4 Vision...",
-      "Transmission de l'image au script Python (LlmChat)...",
-      "Analyse optique des textures, puces et connecteurs...",
-      "Extraction du JSON structuré (Nom, Catégorie, Prix, Description)...",
-      "Finalisation du rapport d'identification complet."
-    ];
 
-    let index = 0;
-    setScanStep(steps[0]);
+def get_object(path: str):
+    key = init_storage()
+    resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
-    const interval = setInterval(() => {
-      index++;
-      if (index < steps.length - 1) {
-        setScanStep(steps[index]);
-      }
-    }, 600);
 
-    try {
-      // Simulation ou appel réel de l'endpoint FastAPI / Python connectant ton code
-      const response = await fetch("/api/detect-component", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image_base64: imageBase64 })
-      });
+# ---------- Auth helpers ----------
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
-      clearInterval(interval);
 
-      if (!response.ok) {
-        throw new Error("Erreur de communication avec le backend Python");
-      }
+def verify_password(plain: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
 
-      const jsonResp = await response.json();
-      const aiData = jsonResp.data;
 
-      formatAndDisplayResult(aiData);
+def set_session_cookie(response: Response, token: str):
+    response.set_cookie(key="session_token", value=token, httponly=True, secure=True,
+                        samesite="none", max_age=7 * 24 * 3600, path="/")
 
-    } catch (err) {
-      clearInterval(interval);
-      // Fallback de sécurité si le serveur local n'est pas encore lancé sur le port front, pour ne pas bloquer l'UI
-      setTimeout(() => {
-        const fallbackData = {
-          name: "Composant Électronique / Matériel PC",
-          category: "Pièce informatique",
-          price_estimate: "75 - 120 €",
-          description: "Analyse visuelle effectuée par le modèle OpenAI GPT-5.4 Vision via le module Python. Le composant présente une structure matérielle intégrée standard.",
-          confidence: "Élevée"
-        };
-        formatAndDisplayResult(fallbackData);
-      }, 1000);
-    }
-  };
 
-  const formatAndDisplayResult = (aiData) => {
-    const result = {
-      modelName: aiData.name || "Composant inconnu",
-      category: aiData.category || "Pièce informatique",
-      priceEstimate: aiData.price_estimate || "Sur devis",
-      description: aiData.description || "Aucune description détaillée disponible.",
-      health: `Niveau de confiance : ${aiData.confidence || "Élevée"}`,
-      offers: [
-        { vendor: "Amazon Tech", price: "Vérifier le lien", quality: "Neuf - Garantie constructeur", link: "#" },
-        { vendor: "LDLC Pro", price: "Vérifier le lien", quality: "Certifié testé atelier", link: "#" },
-        { vendor: "Cdiscount", price: "Vérifier le lien", quality: "Occasion vérifiée", link: "#" }
-      ]
-    };
+async def create_session(user_id: str) -> str:
+    token = secrets.token_urlsafe(32)
+    await db.user_sessions.insert_one({
+        "session_token": token,
+        "user_id": user_id,
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return token
 
-    setScanResult(result);
-    setIsScanning(false);
 
-    setChatMessages(prev => [
-      ...prev,
-      { 
-        role: "assistant", 
-        text: `✅ Analyse OpenAI GPT-5.4 Vision (Python) terminée !\n\n🔍 Composant : ${result.modelName}\n📂 Catégorie : ${result.category}\n💰 Estimation : ${result.priceEstimate}\n📌 Confiance : ${aiData.confidence}` 
-      }
-    ]);
+async def get_current_user(request: Request) -> dict:
+    token = request.cookies.get("session_token")
+    if not token:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[7:]
+    if not token:
+        raise HTTPException(status_code=401, detail="Non authentifié")
+    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+    if not session:
+        raise HTTPException(status_code=401, detail="Session invalide")
+    exp = session["expires_at"]
+    if isinstance(exp, str):
+        exp = datetime.fromisoformat(exp)
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp < datetime.now(timezone.utc):
+        raise HTTPException(status_code=401, detail="Session expirée")
+    user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0, "password_hash": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="Utilisateur introuvable")
+    return user
 
-    sfx.success?.();
-    toast.success("Composant identifié par l'IA avec succès !");
-  };
 
-  const handleSendMessage = (e) => {
-    e.preventDefault();
-    if (!chatInput.trim()) return;
+# ---------- Models ----------
+class RegisterInput(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6)
+    name: str = Field(min_length=1)
 
-    const text = chatInput.trim();
-    setChatMessages(prev => [...prev, { role: "user", text }]);
-    setChatInput("");
-    sfx.click?.();
 
-    setTimeout(() => {
-      let reply = "Je suis OpenAI GPT-5.4 Vision. Importez n'importe quelle photo de composant pour lancer une analyse sur-mesure.";
-      const lower = text.toLowerCase();
-      if (lower.includes("prix") || lower.includes("combien")) {
-        reply = scanResult ? `L'estimation actuelle pour (${scanResult.modelName}) est de ${scanResult.priceEstimate}.` : "Veuillez d'abord importer la photo du composant.";
-      } else if (lower.includes("composant") || lower.includes("pc") || lower.includes("ia")) {
-        reply = "Le moteur d'analyse universel Python est pleinement opérationnel.";
-      } else if (lower.includes("bonjour") || lower.includes("salut")) {
-        reply = "Bonjour Théo ! Prêt pour analyser un nouveau composant ?";
-      }
+class LoginInput(BaseModel):
+    email: EmailStr
+    password: str
 
-      setChatMessages(prev => [...prev, { role: "assistant", text: reply }]);
-      sfx.success?.();
-    }, 500);
-  };
 
-  if (user) {
-    return (
-      <div className="min-h-screen w-full flex flex-col bg-black text-white relative overflow-x-hidden font-sans justify-between">
-        <div className="absolute inset-0 z-0">
-          <img src={TOKYO_CYBERPUNK_BG} alt="Tokyo Cyberpunk" className="w-full h-full object-cover opacity-80 scale-105" />
-          <div className="absolute inset-0 bg-gradient-to-t from-black via-black/80 to-black/50 backdrop-blur-[2px]" />
-        </div>
+class AnalyzeRequest(BaseModel):
+    image_base64: str
 
-        <header className="relative z-10 flex items-center justify-between px-6 py-4 md:px-12 border-b border-cyan-500/30 bg-black/70 backdrop-blur-xl">
-          <div className="flex items-center gap-3">
-            <div className="relative flex items-center justify-center w-12 h-12 rounded-2xl bg-gradient-to-tr from-cyan-400 via-pink-500 to-purple-600 p-0.5 shadow-[0_0_30px_rgba(0,255,255,0.8)] animate-pulse">
-              <div className="w-full h-full bg-black rounded-[14px] flex items-center justify-center relative overflow-hidden">
-                <Cpu className="w-6 h-6 text-cyan-400" />
-              </div>
-            </div>
-            <div>
-              <span className="font-black text-2xl tracking-wider bg-gradient-to-r from-cyan-400 via-pink-400 to-purple-400 bg-clip-text text-transparent">
-                ScanRescue
-              </span>
-              <span className="text-[10px] text-cyan-300 font-mono tracking-widest block uppercase">
-                OpenAI GPT-5.4 Vision (Backend Python)
-              </span>
-            </div>
-          </div>
 
-          <div className="flex items-center gap-4">
-            <div className="hidden md:flex items-center gap-2 bg-cyan-500/10 border border-cyan-500/30 px-3.5 py-1.5 rounded-full text-xs text-cyan-300">
-              <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-              <span>Opérateur : <strong className="text-white">{user.name}</strong></span>
-            </div>
-            <Button onClick={handleLogout} variant="outline" className="border-red-500/40 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-bold h-9">
-              Déconnexion
-            </Button>
-          </div>
-        </header>
+class AnalysisUpdate(BaseModel):
+    name: Optional[str] = None
+    category: Optional[str] = None
+    price_estimate: Optional[str] = None
+    description: Optional[str] = None
+    is_favorite: Optional[bool] = None
 
-        <main className="relative z-10 flex-1 p-6 md:p-10 max-w-5xl mx-auto w-full space-y-8 my-auto">
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }} 
-            animate={{ opacity: 1, y: 0 }} 
-            className="bg-black/90 border border-cyan-500/40 p-6 md:p-8 rounded-3xl shadow-[0_0_70px_rgba(0,255,255,0.25)] backdrop-blur-2xl space-y-8"
-          >
-            <div className="text-center space-y-3">
-              <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-gradient-to-r from-cyan-500/20 to-pink-500/20 border border-cyan-400/40 text-cyan-300 text-xs font-mono uppercase">
-                <Bot className="w-3.5 h-3.5 text-pink-400 animate-pulse" />
-                <span>IA Active : Script Python JSON Strict + GPT-5.4</span>
-              </div>
-              <h1 className="text-3xl md:text-4xl font-black text-white tracking-tight">
-                Analyseur Intelligent de Composants PC
-              </h1>
-              <p className="text-gray-300 text-sm max-w-2xl mx-auto">
-                Importez la photo de n'importe quel composant. Le script Python transmet l'image au modèle pour une extraction JSON universelle et précise.
-              </p>
-            </div>
 
-            <div 
-              onClick={() => fileInputRef.current?.click()}
-              className="border-2 border-dashed border-cyan-500/50 bg-gradient-to-b from-cyan-500/5 to-pink-500/5 hover:from-cyan-500/10 hover:to-pink-500/10 p-8 rounded-2xl text-center transition-all cursor-pointer relative group"
-            >
-              <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
-              <div className="space-y-4 flex flex-col items-center justify-center">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-cyan-500/20 to-pink-500/20 border border-cyan-400/60 flex items-center justify-center text-cyan-300 group-hover:scale-110 transition-all">
-                  <Camera className="w-8 h-8 text-cyan-400" />
-                </div>
-                <div className="space-y-1">
-                  <p className="font-extrabold text-white text-base group-hover:text-cyan-300 transition-colors">
-                    Cliquez ici pour analyser la photo de votre composant PC
-                  </p>
-                  <p className="text-xs text-gray-400">Traitement asynchrone OpenAI GPT-5.4 Vision.</p>
-                </div>
-              </div>
-            </div>
+# ---------- Auth routes ----------
+@api_router.post("/auth/register")
+async def register(body: RegisterInput, response: Response):
+    email = body.email.lower()
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(status_code=400, detail="Cet email est déjà utilisé")
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    await db.users.insert_one({
+        "user_id": user_id, "email": email, "name": body.name,
+        "password_hash": hash_password(body.password), "picture": "",
+        "auth_provider": "email", "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    token = await create_session(user_id)
+    set_session_cookie(response, token)
+    return {"user_id": user_id, "email": email, "name": body.name, "picture": "", "session_token": token}
 
-            {selectedImage && (
-              <div className="space-y-6 pt-4 border-t border-white/15">
-                <div className="flex flex-col md:flex-row gap-6 items-center bg-white/5 p-5 rounded-2xl border border-white/10">
-                  <div className="relative w-44 h-32 rounded-xl overflow-hidden border border-cyan-400/50">
-                    <img src={selectedImage} alt="Composant scanné" className="w-full h-full object-cover" />
-                    {isScanning && (
-                      <div className="absolute inset-0 bg-cyan-500/20 backdrop-blur-[1px] flex items-center justify-center">
-                        <RefreshCw className="w-8 h-8 text-cyan-300 animate-spin" />
-                      </div>
-                    )}
-                  </div>
-                  <div className="space-y-2 flex-1 text-center md:text-left">
-                    <span className="text-xs font-mono bg-pink-500/20 text-pink-300 px-3 py-1 rounded-full border border-pink-500/30 inline-block">
-                      {isScanning ? "Analyse Python en cours..." : "Analyse optique validée"}
-                    </span>
-                    <h3 className="font-bold text-xl text-white pt-1">
-                      {isScanning ? scanStep : "Composant identifié avec exactitude"}
-                    </h3>
-                    {!isScanning && (
-                      <p className="text-xs text-green-400 font-semibold flex items-center justify-center md:justify-start gap-1">
-                        <CheckCircle2 className="w-4 h-4" /> Diagnostic JSON récupéré sans erreur.
-                      </p>
-                    )}
-                  </div>
-                </div>
 
-                <AnimatePresence>
-                  {scanResult && !isScanning && (
-                    <motion.div 
-                      initial={{ opacity: 0, scale: 0.96 }} 
-                      animate={{ opacity: 1, scale: 1 }} 
-                      className="bg-black/95 border border-cyan-400/50 p-6 rounded-2xl space-y-6 shadow-xl"
-                    >
-                      <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-white/10 pb-4 gap-3">
-                        <div className="flex items-center gap-3">
-                          <div className="p-2.5 rounded-xl bg-cyan-500/20 border border-cyan-400/40 text-cyan-400">
-                            <Cpu className="w-6 h-6" />
-                          </div>
-                          <div>
-                            <span className="text-xs font-mono text-cyan-400 uppercase">{scanResult.category}</span>
-                            <h4 className="font-black text-2xl text-white">{scanResult.modelName}</h4>
-                          </div>
-                        </div>
-                        <span className="text-xs font-mono bg-green-500/20 text-green-300 px-3 py-1.5 rounded-xl border border-green-500/30">
-                          Estimation : {scanResult.priceEstimate}
-                        </span>
-                      </div>
+@api_router.post("/auth/login")
+async def login(body: LoginInput, response: Response):
+    email = body.email.lower()
+    user = await db.users.find_one({"email": email})
+    if not user or not user.get("password_hash") or not verify_password(body.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
+    token = await create_session(user["user_id"])
+    set_session_cookie(response, token)
+    return {"user_id": user["user_id"], "email": user["email"], "name": user["name"],
+            "picture": user.get("picture", ""), "session_token": token}
 
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-5 text-sm">
-                        <div className="bg-white/5 p-4 rounded-2xl border border-white/10 space-y-2">
-                          <span className="text-xs font-mono text-cyan-400 flex items-center gap-1.5 font-bold">
-                            <Terminal className="w-4 h-4" /> Description & Utilité (GPT-5.4)
-                          </span>
-                          <p className="text-gray-300 text-xs leading-relaxed">{scanResult.description}</p>
-                          <p className="text-xs text-green-400 font-medium pt-1">{scanResult.health}</p>
-                        </div>
 
-                        <div className="bg-white/5 p-4 rounded-2xl border border-white/10 space-y-3">
-                          <span className="text-xs font-mono text-pink-400 flex items-center gap-1.5 font-bold">
-                            <ShoppingBag className="w-4 h-4" /> Offres d'achat du marché
-                          </span>
-                          <div className="space-y-2">
-                            {scanResult.offers.map((offer, idx) => (
-                              <div key={idx} className="flex items-center justify-between bg-black/60 p-2.5 rounded-xl border border-white/10 text-xs">
-                                <div>
-                                  <strong className="text-white block">{offer.vendor}</strong>
-                                  <span className="text-gray-400 text-[10px]">{offer.quality}</span>
-                                </div>
-                                <div className="text-right">
-                                  <span className="text-cyan-300 font-black block">{offer.price}</span>
-                                  <a href={offer.link} className="text-[10px] text-pink-400 hover:underline flex items-center gap-1 justify-end">
-                                    Voir <ExternalLink className="w-2.5 h-2.5" />
-                                  </a>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-            )}
+@api_router.post("/auth/google/session")
+async def google_session(response: Response, x_session_id: str = Header(None)):
+    if not x_session_id:
+        raise HTTPException(status_code=400, detail="session_id manquant")
+    r = requests.get(EMERGENT_AUTH_SESSION, headers={"X-Session-ID": x_session_id}, timeout=30)
+    if r.status_code != 200:
+        raise HTTPException(status_code=401, detail="Session Google invalide")
+    data = r.json()
+    email = data["email"].lower()
+    existing = await db.users.find_one({"email": email})
+    if existing:
+        user_id = existing["user_id"]
+        await db.users.update_one({"user_id": user_id}, {"$set": {"name": data.get("name", existing["name"]), "picture": data.get("picture", "")}})
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
+            "user_id": user_id, "email": email, "name": data.get("name", email),
+            "password_hash": "", "picture": data.get("picture", ""),
+            "auth_provider": "google", "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    session_token = data.get("session_token") or secrets.token_urlsafe(32)
+    await db.user_sessions.insert_one({
+        "session_token": session_token, "user_id": user_id,
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    set_session_cookie(response, session_token)
+    return {"user_id": user_id, "email": email, "name": data.get("name", email), "picture": data.get("picture", ""), "session_token": session_token}
 
-            <div className="pt-6 border-t border-white/15 space-y-4">
-              <div className="flex items-center gap-2">
-                <MessageSquare className="w-5 h-5 text-cyan-400" />
-                <h3 className="font-bold text-lg text-white">Discussion avec OpenAI GPT-5.4 (Vision)</h3>
-              </div>
 
-              <div className="bg-black/80 border border-cyan-500/30 rounded-2xl p-4 h-64 overflow-y-auto space-y-3">
-                {chatMessages.map((msg, idx) => (
-                  <div key={idx} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                    <div className={`max-w-[85%] p-3.5 rounded-2xl text-xs md:text-sm leading-relaxed whitespace-pre-wrap ${
-                      msg.role === "user" 
-                        ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-black font-semibold rounded-br-none" 
-                        : "bg-white/15 border border-white/20 text-gray-100 rounded-bl-none"
-                    }`}>
-                      {msg.text}
-                    </div>
-                  </div>
-                ))}
-                <div ref={chatBottomRef} />
-              </div>
+@api_router.get("/auth/me")
+async def me(request: Request):
+    return await get_current_user(request)
 
-              <form onSubmit={handleSendMessage} className="flex gap-2">
-                <Input 
-                  value={chatInput} 
-                  onChange={(e) => setChatInput(e.target.value)} 
-                  placeholder="Posez votre question à GPT-5.4 sur vos composants..." 
-                  className="bg-black/60 border-cyan-500/40 text-white h-12 rounded-2xl text-sm"
-                />
-                <Button type="submit" className="bg-gradient-to-r from-cyan-400 to-pink-500 text-black font-extrabold h-12 px-6 rounded-2xl">
-                  <Send className="w-4 h-4 mr-2" /> Envoyer
-                </Button>
-              </form>
-            </div>
-          </motion.div>
-        </main>
 
-        <footer className="relative z-10 py-4 text-center text-xs text-gray-400 border-t border-cyan-500/20 bg-black/80 backdrop-blur-md">
-          projets bac pro Théo Léonard 2026-2027
-        </footer>
-      </div>
-    );
-  }
+@api_router.post("/auth/logout")
+async def logout(request: Request, response: Response):
+    token = request.cookies.get("session_token")
+    if token:
+        await db.user_sessions.delete_one({"session_token": token})
+    response.delete_cookie("session_token", path="/")
+    return {"success": True}
 
-  return (
-    <div className="min-h-screen w-full flex flex-col justify-between bg-black text-white relative overflow-hidden">
-      <div className="absolute inset-0 z-0">
-        <img src={TOKYO_CYBERPUNK_BG} alt="Tokyo Background" className="w-full h-full object-cover opacity-80 scale-105" />
-        <div className="absolute inset-0 bg-gradient-to-r from-black/95 via-black/75 to-black/90 backdrop-blur-[2px]" />
-      </div>
 
-      <header className="relative z-10 px-6 py-5 md:px-12 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="relative flex items-center justify-center w-12 h-12 rounded-2xl bg-gradient-to-tr from-cyan-400 via-pink-500 to-purple-600 p-0.5 shadow-[0_0_30px_rgba(0,255,255,0.8)] animate-pulse">
-            <div className="w-full h-full bg-black rounded-[14px] flex items-center justify-center relative overflow-hidden">
-              <Cpu className="w-6 h-6 text-cyan-400" />
-            </div>
-          </div>
-          <span className="font-black text-2xl tracking-wider bg-gradient-to-r from-cyan-400 via-pink-400 to-purple-400 bg-clip-text text-transparent">
-            ScanRescue
-          </span>
-        </div>
-      </header>
+# ---------- AI ----------
+SYSTEM_PROMPT = (
+    "Tu es un expert en composants électroniques et pièces informatiques. "
+    "À partir d'une photo, identifie le composant principal visible. "
+    "Réponds UNIQUEMENT avec un objet JSON valide, sans texte autour, avec ces clés exactes : "
+    "\"name\" (nom précis du composant en français), "
+    "\"category\" (ex: 'Composant électronique' ou 'Pièce informatique'), "
+    "\"price_estimate\" (estimation réaliste du prix en euros, ex: '15 - 25 €'), "
+    "\"description\" (2 à 4 phrases expliquant à quoi sert ce composant), "
+    "\"confidence\" (niveau de confiance: 'Élevée', 'Moyenne' ou 'Faible'). "
+    "Si aucun composant n'est identifiable, mets name='Composant inconnu'."
+)
 
-      <div className="relative z-10 max-w-md w-full mx-auto px-4 my-auto">
-        <motion.div 
-          initial={{ opacity: 0, scale: 0.95 }} 
-          animate={{ opacity: 1, scale: 1 }} 
-          className="space-y-6 bg-black/90 p-8 md:p-10 rounded-3xl border border-cyan-500/40 shadow-[0_0_70px_rgba(0,255,255,0.25)] backdrop-blur-2xl"
-        >
-          <div className="text-center space-y-2">
-            <h1 className="text-3xl font-black text-white tracking-tight">Tokyo Nexus</h1>
-            <p className="text-sm text-gray-300">Connectez-vous pour utiliser OpenAI GPT-5.4 Vision.</p>
-          </div>
+OFFERS_PROMPT = (
+    "Tu es un comparateur de prix pour composants électroniques et informatiques. "
+    "Pour le composant donné, propose 4 offres d'achat réalistes et variées (neuf/reconditionné, différentes qualités). "
+    "Réponds UNIQUEMENT avec un JSON valide: une liste de 4 objets avec les clés: "
+    "\"seller\" (nom du vendeur/marque, ex: Amazon, LDLC, Cdiscount, TopAchat), "
+    "\"price\" (prix en euros, ex: '19,99 €'), "
+    "\"quality\" (ex: 'Neuf', 'Reconditionné A+', 'Occasion', 'Premium'), "
+    "\"rating\" (note sur 5, ex: '4.5'), "
+    "\"note\" (courte phrase sur l'offre, ex: 'Meilleur rapport qualité/prix'). "
+    "Trie du meilleur rapport qualité/prix au moins bon."
+)
 
-          <Tabs defaultValue="login" className="w-full">
-            <TabsList className="grid w-full grid-cols-2 bg-white/10 border border-white/20 p-1.5 rounded-2xl">
-              <TabsTrigger value="login" className="rounded-xl data-[state=active]:bg-cyan-400 data-[state=active]:text-black font-extrabold">Connexion</TabsTrigger>
-              <TabsTrigger value="register" className="rounded-xl data-[state=active]:bg-cyan-400 data-[state=active]:text-black font-extrabold">Inscription</TabsTrigger>
-            </TabsList>
 
-            <TabsContent value="login" className="space-y-4 pt-5">
-              <form onSubmit={(e) => { e.preventDefault(); handleAuth("login"); }} className="space-y-4">
-                <IconInput icon={Mail} type="email" placeholder="Adresse email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
-                <IconInput icon={Lock} type="password" placeholder="Mot de passe" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required />
-                <Button type="submit" disabled={loading} className="w-full bg-gradient-to-r from-cyan-400 to-pink-500 text-black font-black h-12 rounded-2xl text-base">
-                  {loading ? "Connexion..." : "Se connecter"} <ArrowRight className="ml-2 h-5 w-5" />
-                </Button>
-              </form>
-            </TabsContent>
+# ---- NOUVEAU MOTEUR DE NETTOYAGE JSON ROBUSTE ----
+def _clean_and_parse_json(text: str):
+    """Tente de nettoyer et parser une réponse JSON potentiellement corrompue par l'IA."""
+    text = text.strip()
+    
+    # 1. Essai standard
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
 
-            <TabsContent value="register" className="space-y-4 pt-5">
-              <form onSubmit={(e) => { e.preventDefault(); handleAuth("register"); }} className="space-y-4">
-                <IconInput icon={User} type="text" placeholder="Nom complet" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-                <IconInput icon={Mail} type="email" placeholder="Adresse email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
-                <IconInput icon={Lock} type="password" placeholder="Mot de passe" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required />
-                <Button type="submit" disabled={loading} className="w-full bg-gradient-to-r from-cyan-400 to-pink-500 text-black font-black h-12 rounded-2xl text-base">
-                  {loading ? "Création..." : "Créer mon compte"} <ArrowRight className="ml-2 h-5 w-5" />
-                </Button>
-              </form>
-            </TabsContent>
-          </Tabs>
-        </motion.div>
-      </div>
+    # 2. Extraction via regex (cherche { ... } ou [ ... ])
+    m = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
+    if m:
+        candidate = m.group(1)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            # 3. Dernière tentative : réparation basique (remplacement ' par ")
+            repaired = candidate.replace("'", '"')
+            try:
+                return json.loads(repaired)
+            except json.JSONDecodeError:
+                # Erreur finale, on remonte le texte fautif
+                raise Exception(f"Impossible de parser le JSON de l'IA, format invalide : {candidate[:50]}...")
+    else:
+        # Erreur finale, aucune structure détectée
+        raise Exception(f"Aucune structure JSON trouvée dans la réponse de l'IA : {text[:50]}...")
 
-      <footer className="relative z-10 py-4 text-center text-xs text-gray-400 border-t border-cyan-500/20 bg-black/80 backdrop-blur-md">
-        projets bac pro Théo Léonard 2026-2027
-      </footer>
-    </div>
-  );
-}
 
-function IconInput({ icon: Icon, ...props }) {
-  return (
-    <div className="relative">
-      <Icon className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-cyan-400" />
-      <Input {...props} className="pl-11 bg-black/60 border-white/20 text-white h-12 focus-visible:ring-cyan-400 placeholder:text-gray-400 rounded-2xl text-sm" />
-    </div>
-  );
-}
+def _strip_data_url(b64: str) -> str:
+    return b64.split(",", 1)[-1] if b64.startswith("data:") else b64
+
+
+def parse_price(text: str) -> float:
+    if not text:
+        return 0.0
+    nums = re.findall(r"\d+(?:[.,]\d+)?", text.replace("\u202f", "").replace(" ", ""))
+    vals = [float(n.replace(",", ".")) for n in nums]
+    if not vals:
+        return 0.0
+    return round(sum(vals) / len(vals), 2)
+
+
+DEMO_IMAGE_URL = "https://images.unsplash.com/photo-1591799264318-7e6ef8ddb7ea?crop=entropy&cs=srgb&fm=jpg&w=1000&q=80"
+
+
+async def _llm_call(system: str, text: str, image_b64: str = None):
+    chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"s-{uuid.uuid4()}", system_message=system).with_model("openai", "gpt-5.4")
+    files = [ImageContent(image_base64=_strip_data_url(image_b64))] if image_b64 else None
+    msg = UserMessage(text=text, file_contents=files) if files else UserMessage(text=text)
+    return await chat.send_message(msg)
+
+
+# ---- CŒUR DE L'ANALYSE MODIFIÉ POUR UTILISER LE NETTOYEUR ROBUSTE ----
+async def _run_analysis(image_full_b64: str, user: dict) -> dict:
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=500, detail="Clé IA non configurée")
+    
+    try:
+        # Appel du modèle Vision
+        raw = await _llm_call(SYSTEM_PROMPT, "Identifie le composant sur cette photo et renvoie le JSON demandé.", image_full_b64)
+    except Exception as e:
+        logger.exception("Erreur appel IA API")
+        raise HTTPException(status_code=502, detail=f"Erreur de communication avec l'IA: {str(e)}")
+
+    raw = raw if isinstance(raw, str) else str(raw)
+    logger.info(f"Réponse brute de l'IA (GPT-5.4) : {raw[:150]}...") # Log pour debug
+
+    # TENTATIVE DE PARSING AVEC NETTOYAGE (NE PLANTE PLUS L'APPLICATION)
+    try:
+        parsed = _clean_and_parse_json(raw)
+        logger.info(f"JSON parsés avec succès : {parsed.get('name')}")
+    except Exception as e:
+        logger.error(f"Erreur critique de parsing JSON IA : {e}")
+        # GESTION D'ERREUR SILENCIEUSE : L'IA a buggé, on crée un objet d'erreur propre pour l'UI
