@@ -15,12 +15,13 @@ export default function Auth() {
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({ name: "", email: "", password: "" });
 
-  const googleLogin = () => {
-    sfx.click();
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-window.location.href = "https://scanrescue-backend.onrender.com/api/auth/google";
 
-  const submit = async (mode) => {
+const googleLogin = () => {
+  sfx.click();
+  window.location.href = "https://scanrescue-backend.onrender.com/api/auth/google";
+};
+
+const submit = async (mode) => 
     setBusy(true);
     try {
       if (mode === "login") await login(form.email, form.password);
