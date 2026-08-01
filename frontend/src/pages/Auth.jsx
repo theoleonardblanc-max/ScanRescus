@@ -159,35 +159,19 @@ async def logout(request: Request, response: Response):
     return {"success": True}
 
 SYSTEM_PROMPT = (
-    "Tu es un expert en composants électroniques et puces informatiques. "
-    "Analyse l'image du composant et réponds en français de manière claire en respectant strictement ce format textuel : "
-    "NOM: [Nom précis du composant] "
-    "CATEGORIE: [Catégorie du composant] "
-    "PRIX: [Estimation du prix en euros, ex: 30 €] "
-    "DESCRIPTION: [Explication détaillée de son rôle et de ses caractéristiques]"
+    "Tu es un expert en composants électroniques. Analyse l'image fournie et réponds "
+    "strictement et uniquement sous ce format textuel :\n"
+    "NOM: [Nom exact du composant]\n"
+    "CATEGORIE: [Catégorie]\n"
+    "PRIX: [Prix estimé en euros, ex: 15 €]\n"
+    "DESCRIPTION: [Explication détaillée du rôle et des fonctions du composant]"
 )
 
 def _parse_ai_response(text: str):
     name = "Composant électronique"
-    category = "Matériel informatique"
-    price_estimate = "25 €"
-    description = text
-
-    try:
-        clean = text.strip()
-        m = re.search(r"```(?:json)?\s*(.*?)\s*```", clean, re.DOTALL)
-        if m:
-            clean = m.group(1).strip()
-        data = json.loads(clean)
-        return {
-            "name": data.get("name", name),
-            "category": data.get("category", category),
-            "price_estimate": data.get("price_estimate", price_estimate),
-            "description": data.get("description", description),
-            "confidence": "Élevée"
-        }
-    except Exception:
-        pass
+    category = "Électronique générale"
+    price_estimate = "20 €"
+    description = text if text else "Composant analysé avec succès."
 
     match_name = re.search(r"NOM\s*:\s*(.*)", text, re.IGNORECASE)
     if match_name:
@@ -206,10 +190,10 @@ def _parse_ai_response(text: str):
         description = match_desc.group(1).strip()
 
     return {
-        "name": name,
-        "category": category,
-        "price_estimate": price_estimate,
-        "description": description,
+        "name": name or "Composant électronique",
+        "category": category or "Électronique",
+        "price_estimate": price_estimate or "20 €",
+        "description": description or text,
         "confidence": "Élevée"
     }
 
@@ -220,7 +204,7 @@ def _strip_data_url(b64: str) -> str:
 async def analyze(req: AnalyzeRequest, request: Request):
     user = await get_current_user(request)
     if not EMERGENT_LLM_KEY:
-        raise HTTPException(status_code=500, detail="Clé IA OpenAI non configurée")
+        raise HTTPException(status_code=500, detail="Clé IA non configurée")
 
     try:
         chat = LlmChat(
@@ -233,7 +217,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
         image_content = ImageContent(image_base64=clean_b64)
         
         message = UserMessage(
-            text="Analyse cette image de composant électronique. Réponds obligatoirement en remplissant les champs :\nNOM: [Nom]\nCATEGORIE: [Catégorie]\nPRIX: [Prix]\nDESCRIPTION: [Description]",
+            text="Analyse cette image et donne-moi les informations demandées au format NOM: ..., CATEGORIE: ..., PRIX: ..., DESCRIPTION: ...",
             file_contents=[image_content]
         )
 
@@ -278,7 +262,7 @@ async def download_file(path: str, request: Request):
 
 @api_router.get("/")
 async def root():
-    return {"message": "ScanRescuse API Active avec GPT-4o"}
+    return {"message": "ScanRescuse API Active"}
 
 app.include_router(api_router)
 app.add_middleware(
