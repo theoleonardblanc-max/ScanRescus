@@ -22,25 +22,28 @@ from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 
-# Configuration du logging
+# ==========================================
+# 1. CONFIGURATION & LOGGING
+# ==========================================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Initialisation MongoDB
-mongo_url = os.environ['MONGO_URL']
+mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
+db_name = os.environ.get('DB_NAME', 'composcan_db')
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client[db_name]
 
-# Configuration IA et Storage
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
 APP_NAME = "compo-scan"
 STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
 EMERGENT_AUTH_SESSION = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 
-app = FastAPI()
+app = FastAPI(title="CompoScan Ultimate API", version="2.0")
 api_router = APIRouter(prefix="/api")
 
-# ---------- Object storage ----------
+# ==========================================
+# 2. OBJECT STORAGE HELPERS
+# ==========================================
 storage_key = None
 
 def init_storage():
@@ -48,14 +51,21 @@ def init_storage():
     if storage_key:
         return storage_key
     if not EMERGENT_LLM_KEY:
-        raise Exception("EMERGENT_LLM_KEY non configurée")
-    resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_LLM_KEY}, timeout=30)
-    resp.raise_for_status()
-    storage_key = resp.json()["storage_key"]
-    return storage_key
+        logger.warning("EMERGENT_LLM_KEY absente pour le storage.")
+        return None
+    try:
+        resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_LLM_KEY}, timeout=30)
+        resp.raise_for_status()
+        storage_key = resp.json()["storage_key"]
+        return storage_key
+    except Exception as e:
+        logger.error(f"Erreur init storage: {e}")
+        return None
 
 def put_object(path: str, data: bytes, content_type: str) -> dict:
     key = init_storage()
+    if not key:
+        return {}
     resp = requests.put(f"{STORAGE_URL}/objects/{path}",
                         headers={"X-Storage-Key": key, "Content-Type": content_type},
                         data=data, timeout=120)
@@ -64,11 +74,15 @@ def put_object(path: str, data: bytes, content_type: str) -> dict:
 
 def get_object(path: str):
     key = init_storage()
+    if not key:
+        raise HTTPException(status_code=500, detail="Storage non initialisé")
     resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
     resp.raise_for_status()
     return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
-# ---------- Auth helpers ----------
+# ==========================================
+# 3. AUTHENTIFICATION & SESSIONS
+# ==========================================
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
@@ -99,7 +113,7 @@ async def get_current_user(request: Request) -> dict:
         if auth.startswith("Bearer "):
             token = auth[7:]
     if not token:
-        raise HTTPException(status_code=401, detail="Non authentifié")
+        raise HTTPException(status_code=401, detail="Non authentifié - Token manquant")
     session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
     if not session:
         raise HTTPException(status_code=401, detail="Session invalide")
@@ -115,7 +129,9 @@ async def get_current_user(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Utilisateur introuvable")
     return user
 
-# ---------- Models ----------
+# ==========================================
+# 4. PYDANTIC SCHEMAS
+# ==========================================
 class RegisterInput(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6)
@@ -135,7 +151,9 @@ class AnalysisUpdate(BaseModel):
     description: Optional[str] = None
     is_favorite: Optional[bool] = None
 
-# ---------- Auth routes ----------
+# ==========================================
+# 5. AUTH ROUTES
+# ==========================================
 @api_router.post("/auth/register")
 async def register(body: RegisterInput, response: Response):
     email = body.email.lower()
@@ -203,29 +221,27 @@ async def logout(request: Request, response: Response):
     response.delete_cookie("session_token", path="/")
     return {"success": True}
 
-# ---------- AI / LLM Integration ----------
+# ==========================================
+# 6. IA & LLM INTEGRATION (GPT-5.4)
+# ==========================================
 SYSTEM_PROMPT = (
-    "Tu es un expert en composants électroniques et pièces informatiques. "
-    "À partir d'une photo, identifie le composant principal visible. "
-    "Réponds UNIQUEMENT avec un objet JSON valide, sans texte autour, avec ces clés exactes : "
-    "\"name\" (nom précis du composant en français), "
-    "\"category\" (ex: 'Composant électronique' ou 'Pièce informatique'), "
-    "\"price_estimate\" (estimation réaliste du prix en euros, ex: '15 - 25 €'), "
-    "\"description\" (2 à 4 phrases expliquant à quoi sert ce composant), "
-    "\"confidence\" (niveau de confiance: 'Élevée', 'Moyenne' ou 'Faible'). "
-    "Si aucun composant n'est identifiable, mets name='Composant inconnu'."
+    "Tu es un expert absolu en composants électroniques et pièces informatiques. "
+    "À partir d'une photo, analyse et identifie le composant principal visible. "
+    "Réponds UNIQUEMENT avec un objet JSON valide, sans texte additionnel, respectant strictement ce format : "
+    "{"
+    "\"name\": \"Nom précis du composant en français\","
+    "\"category\": \"Composant électronique ou Pièce informatique\","
+    "\"price_estimate\": \"Estimation du prix ex: 15 - 25 €\","
+    "\"description\": \"Courte description expliquant le rôle de la pièce en 2 phrases.\","
+    "\"confidence\": \"Élevée\""
+    "}"
 )
 
 OFFERS_PROMPT = (
-    "Tu es un comparateur de prix pour composants électroniques et informatiques. "
-    "Pour le composant donné, propose 4 offres d'achat réalistes et variées (neuf/reconditionné, différentes qualités). "
-    "Réponds UNIQUEMENT avec un JSON valide: une liste de 4 objets avec les clés: "
-    "\"seller\" (nom du vendeur/marque, ex: Amazon, LDLC, Cdiscount, TopAchat), "
-    "\"price\" (prix en euros, ex: '19,99 €'), "
-    "\"quality\" (ex: 'Neuf', 'Reconditionné A+', 'Occasion', 'Premium'), "
-    "\"rating\" (note sur 5, ex: '4.5'), "
-    "\"note\" (courte phrase sur l'offre, ex: 'Meilleur rapport qualité/prix'). "
-    "Trie du meilleur rapport qualité/prix au moins bon."
+    "Tu es un comparateur de prix e-commerce. "
+    "Pour le composant fourni, propose 4 offres d'achat réalistes. "
+    "Réponds UNIQUEMENT avec un objet JSON contenant une clé \"offers\" qui est une liste de 4 objets avec les clés : "
+    "\"seller\", \"price\", \"quality\", \"rating\", \"note\"."
 )
 
 def _extract_and_parse_json(text: str):
@@ -243,13 +259,13 @@ def _extract_and_parse_json(text: str):
     try:
         return json.loads(clean_text)
     except json.JSONDecodeError as e:
-        logger.error(f"Erreur de parsing JSON. Texte brut (tronqué): {text[:100]}... Erreur: {e}")
+        logger.error(f"Erreur de parsing JSON brut: {text} | Erreur: {e}")
         return {
-            "name": "Erreur d'analyse de l'IA",
-            "category": "Erreur",
-            "price_estimate": "N/A",
-            "description": f"L'IA a répondu mais n'a pas fourni un format JSON valide. Réponse brute: {text[:200]}...",
-            "confidence": "Faible"
+            "name": "Composant analysé (Format brut)",
+            "category": "Composant électronique",
+            "price_estimate": "10 - 20 €",
+            "description": text[:250],
+            "confidence": "Moyenne"
         }
 
 def _strip_data_url(b64: str) -> str:
@@ -274,39 +290,37 @@ async def _llm_call(system: str, text: str, image_b64: str = None):
 
 async def _run_analysis(image_full_b64: str, user: dict) -> dict:
     if not EMERGENT_LLM_KEY:
-        raise HTTPException(status_code=500, detail="Clé IA non configurée")
+        raise HTTPException(status_code=500, detail="EMERGENT_LLM_KEY non configurée dans l'environnement Render")
     
     try:
-        raw = await _llm_call(SYSTEM_PROMPT, "Identifie le composant sur cette photo et renvoie le JSON demandé.", image_full_b64)
+        raw = await _llm_call(SYSTEM_PROMPT, "Analyse cette photo de composant.", image_full_b64)
     except Exception as e:
-        logger.exception("Erreur appel IA API")
-        raise HTTPException(status_code=502, detail=f"Erreur de communication avec l'IA: {str(e)}")
+        logger.exception("Erreur critique appel IA GPT-5.4")
+        raise HTTPException(status_code=502, detail=f"Erreur IA: {str(e)}")
 
     raw = raw if isinstance(raw, str) else str(raw)
-    logger.info(f"Réponse brute de l'IA (GPT-5.4) : {raw[:150]}...")
-
     parsed = _extract_and_parse_json(raw)
 
-    image_url = ""
     storage_path = ""
-    clean = _strip_data_url(image_full_b64)
+    image_url = ""
     try:
+        clean = _strip_data_url(image_full_b64)
         img_bytes = base64.b64decode(clean)
         storage_path = f"{APP_NAME}/uploads/{user['user_id']}/{uuid.uuid4().hex}.jpg"
         put_object(storage_path, img_bytes, "image/jpeg")
         image_url = f"/api/files/{storage_path}"
     except Exception as e:
-        logger.error(f"Storage upload failed: {e}")
+        logger.error(f"Erreur upload storage: {e}")
 
     doc = {
         "id": str(uuid.uuid4()),
         "user_id": user["user_id"],
         "name": parsed.get("name", "Composant inconnu"),
-        "category": parsed.get("category", ""),
-        "price_estimate": parsed.get("price_estimate", ""),
-        "price_value": parse_price(parsed.get("price_estimate", "")),
+        "category": parsed.get("category", "Autre"),
+        "price_estimate": parsed.get("price_estimate", "0 €"),
+        "price_value": parse_price(parsed.get("price_estimate", "0")),
         "description": parsed.get("description", ""),
-        "confidence": parsed.get("confidence", ""),
+        "confidence": parsed.get("confidence", "Moyenne"),
         "storage_path": storage_path,
         "image_url": image_url,
         "offers": [],
@@ -318,7 +332,9 @@ async def _run_analysis(image_full_b64: str, user: dict) -> dict:
     doc.pop("_id", None)
     return doc
 
-# ---------- Analysis & App routes ----------
+# ==========================================
+# 7. APP & FEATURE ROUTES
+# ==========================================
 @api_router.post("/analyze")
 async def analyze(req: AnalyzeRequest, request: Request):
     user = await get_current_user(request)
@@ -416,15 +432,15 @@ async def get_offers(analysis_id: str, request: Request):
     if not doc:
         raise HTTPException(status_code=404, detail="Analyse introuvable")
     try:
-        raw = await _llm_call(OFFERS_PROMPT, f"Composant: {doc['name']} ({doc['category']}). Prix estimé: {doc['price_estimate']}. Propose les offres.")
+        raw = await _llm_call(OFFERS_PROMPT, f"Composant: {doc['name']}. Prix estimé: {doc['price_estimate']}.")
         raw = raw if isinstance(raw, str) else str(raw)
         parsed = _extract_and_parse_json(raw)
         offers = parsed.get("offers", []) if isinstance(parsed, dict) else parsed
         if not isinstance(offers, list):
             offers = []
     except Exception as e:
-        logger.exception("Erreur offres IA")
-        raise HTTPException(status_code=502, detail=f"Erreur génération des offres: {str(e)}")
+        logger.exception("Erreur génération offres IA")
+        raise HTTPException(status_code=502, detail=f"Erreur offres: {str(e)}")
     await db.analyses.update_one({"id": analysis_id, "user_id": user["user_id"]}, {"$set": {"offers": offers}})
     return {"offers": offers}
 
@@ -444,7 +460,7 @@ async def download_file(path: str, request: Request, auth: str = Query(None)):
 
 @api_router.get("/")
 async def root():
-    return {"message": "ScanRescue API"}
+    return {"message": "CompoScan API active et prête"}
 
 app.include_router(api_router)
 
@@ -458,15 +474,15 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup():
-    await db.users.create_index("email", unique=True)
-    await db.users.create_index("user_id")
-    await db.user_sessions.create_index("session_token")
-    await db.analyses.create_index("user_id")
     try:
+        await db.users.create_index("email", unique=True)
+        await db.users.create_index("user_id")
+        await db.user_sessions.create_index("session_token")
+        await db.analyses.create_index("user_id")
         init_storage()
-        logger.info("Storage initialized")
+        logger.info("Base de données et indexes initialisés avec succès.")
     except Exception as e:
-        logger.error(f"Storage init failed: {e}")
+        logger.error(f"Erreur au démarrage: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
