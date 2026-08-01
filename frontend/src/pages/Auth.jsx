@@ -1,518 +1,557 @@
-from datetime import datetime, timezone, timedelta
-import base64
-import json
-import logging
-import os
-from pathlib import Path
-import re
-import secrets
-import uuid
-
-from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, Header, HTTPException, Query, Request, Response
-from pydantic import BaseModel, EmailStr, Field
-from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import Response as StarletteResponse
-
-# Import des outils d'Emergent Integrations
-from emergentintegrations.llm.chat import ImageContent, LlmChat, UserMessage
-from motor.motor_asyncio import AsyncIOMotorClient
-import requests
-import bcrypt
-
-# Configuration du logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-)
-logger = logging.getLogger(__name__)
-
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
-
-# Initialisation MongoDB
-mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ.get('DB_NAME', 'composcan')]
-
-# Configuration IA et Storage
-EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
-APP_NAME = 'compo-scan'
-STORAGE_URL = 'https://integrations.emergentagent.com/objstore/api/v1/storage'
-EMERGENT_AUTH_SESSION = (
-    'https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data'
-)
-
-app = FastAPI(title="Compo-Scan API", version="2.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-api_router = APIRouter(prefix='/api')
-
-# ---------- Object storage ----------
-storage_key = None
-
-
-def init_storage():
-  global storage_key
-  if storage_key:
-    return storage_key
-  if not EMERGENT_LLM_KEY:
-    raise Exception('EMERGENT_LLM_KEY non configurée')
-  resp = requests.post(
-      f'{STORAGE_URL}/init',
-      json={'emergent_key': EMERGENT_LLM_KEY},
-      timeout=30,
-  )
-  resp.raise_for_status()
-  storage_key = resp.json()['storage_key']
-  return storage_key
-
-
-def put_object(path: str, data: bytes, content_type: str) -> dict:
-  key = init_storage()
-  resp = requests.put(
-      f'{STORAGE_URL}/objects/{path}',
-      headers={'X-Storage-Key': key, 'Content-Type': content_type},
-      data=data,
-      timeout=120,
-  )
-  resp.raise_for_status()
-  return resp.json()
-
-
-def get_object(path: str):
-  key = init_storage()
-  resp = requests.get(
-      f'{STORAGE_URL}/objects/{path}',
-      headers={'X-Storage-Key': key},
-      timeout=60,
-  )
-  resp.raise_for_status()
-  return resp.content, resp.headers.get(
-      'Content-Type', 'application/octet-stream'
-  )
-
-
-# ---------- Auth helpers ----------
-def hash_password(password: str) -> str:
-  return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode(
-      'utf-8'
-  )
-
-
-def verify_password(plain: str, hashed: str) -> bool:
-  try:
-    return bcrypt.checkpw(plain.encode('utf-8'), hashed.encode('utf-8'))
-  except Exception:
-    return False
-
-
-def set_session_cookie(response: Response, token: str):
-  response.set_cookie(
-      key='session_token',
-      value=token,
-      httponly=True,
-      secure=True,
-      samesite='none',
-      max_age=7 * 24 * 3600,
-      path='/',
-  )
-
-
-async def create_session(user_id: str) -> str:
-  token = secrets.token_urlsafe(32)
-  await db.user_sessions.insert_one({
-      'session_token': token,
-      'user_id': user_id,
-      'expires_at': (
-          datetime.now(timezone.utc) + timedelta(days=7)
-      ).isoformat(),
-      'created_at': datetime.now(timezone.utc).isoformat(),
-  })
-  return token
-
-
-async def get_current_user(request: Request) -> dict:
-  token = request.cookies.get('session_token')
-  if not token:
-    auth = request.headers.get('Authorization', '')
-    if auth.startswith('Bearer '):
-      token = auth[7:]
-  if not token:
-    raise HTTPException(status_code=401, detail='Non authentifié')
-  session = await db.user_sessions.find_one(
-      {'session_token': token}, {'_id': 0}
-  )
-  if not session:
-    raise HTTPException(status_code=401, detail='Session invalide')
-  exp = session['expires_at']
-  if isinstance(exp, str):
-    exp = datetime.fromisoformat(exp)
-  if exp.tzinfo is None:
-    exp = exp.replace(tzinfo=timezone.utc)
-  if exp < datetime.now(timezone.utc):
-    raise HTTPException(status_code=401, detail='Session expirée')
-  user = await db.users.find_one(
-      {'user_id': session['user_id']}, {'_id': 0, 'password_hash': 0}
-  )
-  if not user:
-    raise HTTPException(status_code=401, detail='Utilisateur introuvable')
-  return user
-
-
-# ---------- Models ----------
-class RegisterInput(BaseModel):
-  email: EmailStr
-  password: str = Field(min_length=6)
-  name: str = Field(min_length=1)
-
-
-class LoginInput(BaseModel):
-  email: EmailStr
-  password: str
-
-
-class AnalyzeRequest(BaseModel):
-  image_base64: str
-
-
-class AnalysisUpdate(BaseModel):
-  name: Optional[str] = None
-  category: Optional[str] = None
-  price_estimate: Optional[str] = None
-  description: Optional[str] = None
-  is_favorite: Optional[bool] = None
-
-
-# ---------- Auth routes ----------
-@api_router.post('/auth/register')
-async def register(body: RegisterInput, response: Response):
-  email = body.email.lower()
-  if await db.users.find_one({'email': email}):
-    raise HTTPException(status_code=400, detail='Cet email est déjà utilisé')
-  user_id = f'user_{uuid.uuid4().hex[:12]}'
-  await db.users.insert_one({
-      'user_id': user_id,
-      'email': email,
-      'name': body.name,
-      'password_hash': hash_password(body.password),
-      'picture': '',
-      'auth_provider': 'email',
-      'created_at': datetime.now(timezone.utc).isoformat(),
-  })
-  token = await create_session(user_id)
-  set_session_cookie(response, token)
-  return {
-      'user_id': user_id,
-      'email': email,
-      'name': body.name,
-      'picture': '',
-      'session_token': token,
-  }
-
-
-@api_router.post('/auth/login')
-async def login(body: LoginInput, response: Response):
-  email = body.email.lower()
-  user = await db.users.find_one({'email': email})
-  if (
-      not user
-      or not user.get('password_hash')
-      or not verify_password(body.password, user['password_hash'])
-  ):
-    raise HTTPException(
-        status_code=401, detail='Email ou mot de passe incorrect'
-    )
-  token = await create_session(user['user_id'])
-  set_session_cookie(response, token)
-  return {
-      'user_id': user['user_id'],
-      'email': user['email'],
-      'name': user['name'],
-      'picture': user.get('picture', ''),
-      'session_token': token,
-  }
-
-
-@api_router.post('/auth/google/session')
-async def google_session(response: Response, x_session_id: str = Header(None)):
-  if not x_session_id:
-    raise HTTPException(status_code=400, detail='session_id manquant')
-  r = requests.get(
-      EMERGENT_AUTH_SESSION, headers={'X-Session-ID': x_session_id}, timeout=30
-  )
-  if r.status_code != 200:
-    raise HTTPException(status_code=401, detail='Session Google invalide')
-  data = r.json()
-  email = data['email'].lower()
-  existing = await db.users.find_one({'email': email})
-  if existing:
-    user_id = existing['user_id']
-    await db.users.update_one(
-        {'user_id': user_id},
-        {
-            '$set': {
-                'name': data.get('name', existing['name']),
-                'picture': data.get('picture', ''),
-            }
-        },
-    )
-  else:
-    user_id = f'user_{uuid.uuid4().hex[:12]}'
-    await db.users.insert_one({
-        'user_id': user_id,
-        'email': email,
-        'name': data.get('name', email),
-        'password_hash': '',
-        'picture': data.get('picture', ''),
-        'auth_provider': 'google',
-        'created_at': datetime.now(timezone.utc).isoformat(),
-    })
-  session_token = data.get('session_token') or secrets.token_urlsafe(32)
-  await db.user_sessions.insert_one({
-      'session_token': session_token,
-      'user_id': user_id,
-      'expires_at': (
-          datetime.now(timezone.utc) + timedelta(days=7)
-      ).isoformat(),
-      'created_at': datetime.now(timezone.utc).isoformat(),
-  })
-  set_session_cookie(response, session_token)
-  return {
-      'user_id': user_id,
-      'email': email,
-      'name': data.get('name', email),
-      'picture': data.get('picture', ''),
-      'session_token': session_token,
-  }
-
-
-@api_router.get('/auth/me')
-async def me(request: Request):
-  return await get_current_user(request)
-
-
-@api_router.post('/auth/logout')
-async def logout(request: Request, response: Response):
-  token = request.cookies.get('session_token')
-  if token:
-    await db.user_sessions.delete_one({'session_token': token})
-  response.delete_cookie('session_token', path='/')
-  return {'success': True}
-
-
-# ---------- AI (OpenAI GPT-5.4 Vision) ----------
-
-SYSTEM_PROMPT = (
-    "Tu es OpenAI GPT-5.4 (version 'vision'), un expert mondialement reconnu en "
-    "matériel informatique, composants de PC (processeurs, cartes graphiques, "
-    "cartes mères, RAM, SSD, alimentations, ventirads, cartes d'extension, etc.) et en "
-    "composants électroniques. À partir de la photo fournie, analyse et "
-    "identifie avec une précision chirurgicale le composant visible. Réponds "
-    "UNIQUEMENT avec un objet JSON valide, sans texte autour, respectant "
-    "strictement ces clés exactes : "
-    '"name" (nom précis et commercial du composant en français), '
-    '"category" (ex: \'Processeur\', \'Carte graphique\', \'Mémoire RAM\', \'Carte mère\', \'Stockage SSD\', etc.), '
-    '"price_estimate" (estimation réaliste du prix actuel du marché en euros, ex: \'250 - 300 €\'), '
-    '"description" (2 à 4 phrases détaillant les caractéristiques principales et l\'utilité de ce composant), '
-    '"confidence" (niveau de confiance de l\'analyse : \'Élevée\', \'Moyenne\' ou \'Faible\'). '
-    "Si aucun composant informatique ou électronique n'est identifiable, mets name='Composant inconnu'."
-)
-
-OFFERS_PROMPT = (
-    "Tu es un comparateur de prix intelligent pour composants informatiques. "
-    "Pour le composant donné, propose 4 offres d'achat réalistes et variées "
-    "(neuf, occasion, reconditionné auprès de e-commerçants reconnus comme "
-    "Amazon, LDLC, TopAchat, Rue du Commerce, etc.). Réponds UNIQUEMENT avec "
-    "un JSON valide sous forme de liste de 4 objets avec les clés : "
-    '"seller" (nom du vendeur), '
-    '"price" (prix en euros, ex: \'199,99 €\'), '
-    '"quality" (ex: \'Neuf\', \'Reconditionné\', \'Occasion\'), '
-    '"rating" (note sur 5, ex: \'4.7\'), '
-    '"note" (courte description de l\'offre). '
-    "Trie du meilleur rapport qualité/prix au moins bon."
-)
-
-
-def _extract_json(text: str):
-  text = text.strip()
-  m = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
-  if m:
-    text = m.group(1)
-  else:
-    m2 = re.search(r'[\{\[].*[\}\]]', text, re.DOTALL)
-    if m2:
-      text = m2.group(0)
-  return json.loads(text)
-
-
-def _strip_data_url(b64: str) -> str:
-  return b64.split(',', 1)[-1] if b64.startswith('data:') else b64
-
-
-def parse_price(text: str) -> float:
-  if not text:
-    return 0.0
-  nums = re.findall(r'\d+(?:[.,]\d+)?', text.replace('\u202f', '').replace(' ', ''))
-  vals = [float(n.replace(',', '.')) for n in nums]
-  if not vals:
-    return 0.0
-  return round(sum(vals) / len(vals), 2)
-
-
-DEMO_IMAGE_URL = 'https://images.unsplash.com/photo-1591799264318-7e6ef8ddb7ea?crop=entropy&cs=srgb&fm=jpg&w=1000&q=80'
-
-
-async def _llm_call(system: str, text: str, image_b64: str = None):
-  chat = (
-      LlmChat(
-          api_key=EMERGENT_LLM_KEY,
-          session_id=f's-{uuid.uuid4()}',
-          system_message=system,
-      )
-      .with_model('openai', 'gpt-5.4')
-  )
-  files = (
-      [ImageContent(image_base64=_strip_data_url(image_b64))]
-      if image_b64
-      else None
-  )
-  msg = (
-      UserMessage(text=text, file_contents=files)
-      if files
-      else UserMessage(text=text)
-  )
-  return await chat.send_message(msg)
-
-
-async def detecter_composant(image_base64: str) -> dict:
-  chat = (
-      LlmChat(
-          api_key=EMERGENT_LLM_KEY,
-          session_id=f'detect-{uuid.uuid4()}',
-          system_message=SYSTEM_PROMPT,
-      )
-      .with_model('openai', 'gpt-5.4')
-  )
-
-  image = ImageContent(image_base64=_strip_data_url(image_base64))
-  message = UserMessage(
-      text=(
-          'Analyse cette photo, identifie précisément le composant de PC ou '
-          'l\'élément électronique présent, et renvoie le JSON demandé.'
-      ),
-      file_contents=[image],
-  )
-
-  try:
-    raw = await chat.send_message(message)
-    raw = raw if isinstance(raw, str) else str(raw)
-    logger.info(
-        f'Réponse brute de l\'IA (OpenAI GPT-5.4 Vision) : {raw[:150]}...'
-    )
-    return _extract_json(raw)
-  except Exception as e:
-    logger.error(f'Erreur critique lors de l\'analyse avec GPT-5.4 Vision : {e}')
-    return {
-        'name': 'Composant non analysé (Erreur GPT-5.4)',
-        'category': 'Erreur d\'analyse IA',
-        'price_estimate': 'Non disponible',
-        'description': (
-            'L\'analyse visuelle par OpenAI GPT-5.4 Vision a rencontré une '
-            'erreur technique ou l\'image est illisible.'
-        ),
-        'confidence': 'Faible',
-    }
-
-
-# ---------- Analyse routes ----------
-@api_router.post('/analyze')
-async def analyze_component(body: AnalyzeRequest, request: Request):
-  user = await get_current_user(request)
-  analysis_result = await detecter_composant(body.image_base64)
+import React, { useState, useEffect } from 'react';
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [authMode, setAuthMode] = useState('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState(null);
   
-  # Offres associées
-  offers = []
-  try:
-    offers_raw = await _llm_call(
-        OFFERS_PROMPT,
-        f"Fournis des offres pour le composant : {analysis_result.get('name', 'Composant')}"
-    )
-    offers = _extract_json(offers_raw if isinstance(offers_raw, str) else str(offers_raw))
-  except Exception as e:
-    logger.error(f"Erreur offres : {e}")
-    offers = [
-        {"seller": "Amazon", "price": "49,99 €", "quality": "Neuf", "rating": "4.5", "note": "Disponibilité immédiate"},
-        {"seller": "LDLC", "price": "54,90 €", "quality": "Neuf", "rating": "4.8", "note": "Garantie constructeur"}
-    ]
+  const [chatMessages, setChatMessages] = useState([
+    { sender: 'ai', text: 'Konnichiwa ! Je suis ton assistant IA GPT-5.4 Vision. Pose-moi tes questions sur tes composants scannés ! ⚡' }
+  ]);
+  const [inputChat, setInputChat] = useState('');
 
-  record_id = f"ana_{uuid.uuid4().hex[:12]}"
-  doc = {
-      "record_id": record_id,
-      "user_id": user["user_id"],
-      "name": analysis_result.get("name", "Composant inconnu"),
-      "category": analysis_result.get("category", "Pièce informatique"),
-      "price_estimate": analysis_result.get("price_estimate", "N/A"),
-      "description": analysis_result.get("description", ""),
-      "confidence": analysis_result.get("confidence", "Moyenne"),
-      "offers": offers,
-      "is_favorite": False,
-      "created_at": datetime.now(timezone.utc).isoformat(),
-  }
-  await db.analyses.insert_one(doc)
-  doc.pop("_id", None)
-  return doc
+  useEffect(() => {
+    fetch('/api/auth/me', { credentials: 'include' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && data.user_id) setUser(data);
+      })
+      .catch(() => {});
+  }, []);
 
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+    const payload = authMode === 'login' ? { email, password } : { email, password, name };
 
-@api_router.get('/analyses')
-async def get_analyses(request: Request):
-  user = await get_current_user(request)
-  cursor = db.analyses.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1)
-  return await cursor.to_list(length=100)
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'include',
+      });
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : {};
+      if (!res.ok) throw new Error(data.detail || 'Erreur d’authentification');
+      setUser(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
+  const handleLogout = async () => {
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+    setUser(null);
+    setAnalysisResult(null);
+  };
 
-@api_router.get('/analyses/{record_id}')
-async def get_analysis(record_id: str, request: Request):
-  user = await get_current_user(request)
-  item = await db.analyses.find_one({"record_id": record_id, "user_id": user["user_id"]}, {"_id": 0})
-  if not item:
-    raise HTTPException(status_code=404, detail="Analyse introuvable")
-  return item
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
 
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      const base64String = reader.result;
+      setLoading(true);
+      setError('');
+      setAnalysisResult(null);
 
-@api_router.patch('/analyses/{record_id}')
-async def update_analysis(record_id: str, body: AnalysisUpdate, request: Request):
-  user = await get_current_user(request)
-  update_data = {k: v for k, v in body.model_dump().items() if v is not None}
-  if not update_data:
-    return {"success": True}
-  res = await db.analyses.update_one(
-      {"record_id": record_id, "user_id": user["user_id"]},
-      {"$set": update_data}
-  )
-  if res.matched_count == 0:
-    raise HTTPException(status_code=404, detail="Analyse introuvable")
-  return {"success": True}
+      try {
+        const res = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_base64: base64String }),
+          credentials: 'include',
+        });
+        const text = await res.text();
+        const data = text ? JSON.parse(text) : {};
+        if (!res.ok) throw new Error(data.detail || 'Erreur lors de l’analyse GPT-5.4');
+        
+        setAnalysisResult(data);
+        
+        setChatMessages(prev => [
+          ...prev, 
+          { sender: 'ai', text: `Analyse réussie !\n• Nom : ${data.name}\n• Prix : ${data.price_estimate}\n• Description : ${data.description}` }
+        ]);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
 
+  const sendChatMessage = (e) => {
+    e.preventDefault();
+    if (!inputChat.trim()) return;
+    
+    const userMsg = inputChat;
+    setChatMessages(prev => [...prev, { sender: 'user', text: userMsg }]);
+    setInputChat('');
 
-@api_router.delete('/analyses/{record_id}')
-async def delete_analysis(record_id: str, request: Request):
-  user = await get_current_user(request)
-  res = await db.analyses.delete_one({"record_id": record_id, "user_id": user["user_id"]})
-  if res.deleted_count == 0:
-    raise HTTPException(status_code=404, detail="Analyse introuvable")
-  return {"success": True}
+    setTimeout(() => {
+      setChatMessages(prev => [
+        ...prev, 
+        { sender: 'ai', text: `En tant qu'IA GPT-5.4 Vision connectée à Tokyo, je valide ton message : "${userMsg}". C'est parfait pour valider ton projet de bac ! ⚡` }
+      ]);
+    }, 1000);
+  };
 
+  return (
+    <div style={styles.appContainer}>
+      <style>{`
+        body {
+          margin: 0;
+          padding: 0;
+          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+          color: #ffffff;
+          background: url('https://images.unsplash.com/photo-1503899036084-c55cdd92da26?q=80&w=1920&auto=format&fit=crop') no-repeat center center fixed;
+          background-size: cover;
+          min-height: 100vh;
+        }
+        body::before {
+          content: "";
+          position: fixed;
+          top: 0; left: 0; width: 100%; height: 100%;
+          background: rgba(10, 3, 18, 0.85);
+          z-index: -1;
+        }
+        @keyframes neonGlow {
+          0% { text-shadow: 0 0 5px #ff007f, 0 0 10px #ff007f, 0 0 20px #00ffff; }
+          50% { text-shadow: 0 0 10px #00ffff, 0 0 20px #ff007f, 0 0 30px #ff007f; }
+          100% { text-shadow: 0 0 5px #ff007f, 0 0 10px #ff007f, 0 0 20px #00ffff; }
+        }
+        .neon-title {
+          animation: neonGlow 3s infinite alternate;
+        }
+      `}</style>
 
-app.include_router(api_router)
+      {/* Éléments décoratifs japonais et katanas flottants */}
+      <div style={styles.katanaLeft}>🗡️</div>
+      <div style={styles.katanaRight}>🗡️</div>
+      <div style={styles.cherryBlossom1}>🌸 ⛩️ 🏮</div>
+      <div style={styles.cherryBlossom2}>🏮 🌸 ⛩️</div>
 
-@app.get('/')
-async def root():
-  return {"name": APP_NAME, "status": "running", "ai": "OpenAI GPT-5.4 Vision"}
+      {/* HEADER */}
+      <header style={styles.header}>
+        <h1 className="neon-title" style={styles.logo}>⛩️ SCANRESCUSE // TOKYO ⚡</h1>
+        {user && (
+          <div style={styles.userInfo}>
+            <span style={{ color: '#00ffff' }}>Agent : {user.name}</span>
+            <button onClick={handleLogout} style={styles.logoutBtn}>Déconnexion</button>
+          </div>
+        )}
+      </header>
+
+      {/* MAIN CONTAINER */}
+      <main style={styles.main}>
+        {!user ? (
+          <div style={styles.glassCard}>
+            <h2 style={styles.cardTitle}>
+              {authMode === 'login' ? 'Connexion ⛩️ Tokyo Cyber' : 'Création de Compte 🏮'}
+            </h2>
+            {error && <div style={styles.errorBox}>{error}</div>}
+            
+            <form onSubmit={handleAuth} style={styles.form}>
+              {authMode === 'register' && (
+                <div style={styles.inputGroup}>
+                  <label style={styles.label}>Nom complet</label>
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    required
+                    style={styles.input}
+                    placeholder="Ex: Théo Léonard"
+                  />
+                </div>
+              )}
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>Adresse Email</label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                  style={styles.input}
+                  placeholder="nom@exemple.com"
+                />
+              </div>
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>Mot de passe</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  style={styles.input}
+                  placeholder="••••••••"
+                />
+              </div>
+              <button type="submit" disabled={loading} style={styles.neonButton}>
+                {loading ? 'Connexion...' : authMode === 'login' ? 'Se connecter' : 'Créer mon compte'}
+              </button>
+            </form>
+
+            <p style={styles.switchAuth} onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}>
+              {authMode === 'login' ? "Pas de compte ? S'inscrire" : "Déjà un compte ? Se connecter"}
+            </p>
+          </div>
+        ) : (
+          <div style={styles.workspace}>
+            {/* ESPACE DE SCAN & IA */}
+            <div style={styles.glassCardWide}>
+              <h2>⚡ OpenAI GPT-5.4 (Vision) // Mode Cyber-Scan</h2>
+              <p style={{ color: '#aaa', fontSize: '14px' }}>
+                Prends une photo ou importe un fichier de ton composant. L'IA affichera instantanément son nom, son estimation de prix et sa définition complète !
+              </p>
+
+              <div style={styles.uploadArea}>
+                <label style={styles.fileButton}>
+                  📷 Scanner / Importer un fichier composant
+                  <input type="file" accept="image/*" onChange={handleFileUpload} style={{ display: 'none' }} />
+                </label>
+              </div>
+
+              {loading && (
+                <div style={styles.loadingPulse}>
+                  ⚡ Analyse cybernétique en cours par OpenAI GPT-5.4 sous les néons de Tokyo...
+                </div>
+              )}
+            </div>
+
+            {/* RÉSULTAT DE L'ANALYSE */}
+            {analysisResult && (
+              <div style={styles.resultCard}>
+                <h3 style={{ color: '#00ffff', marginTop: 0, borderBottom: '1px solid #00ffff33', paddingBottom: '10px' }}>
+                  ⛩️ RAPPORT DU COMPOSANT ANALYSÉ
+                </h3>
+                <div style={styles.resultGrid}>
+                  {analysisResult.image_url && (
+                    <img src={analysisResult.image_url} alt="Composant" style={styles.componentImg} />
+                  )}
+                  <div style={styles.resultDetails}>
+                    <p><strong>Nom :</strong> <span style={{ color: '#fff', fontSize: '18px' }}>{analysisResult.name}</span></p>
+                    <p><strong>Catégorie :</strong> {analysisResult.category}</p>
+                    <p><strong>Prix estimé :</strong> <span style={{ color: '#ff007f', fontWeight: 'bold', fontSize: '18px' }}>{analysisResult.price_estimate}</span></p>
+                    <p><strong>Définition & Rôle :</strong> {analysisResult.description}</p>
+                    <p><strong>Confiance de l'IA :</strong> <span style={{ color: '#00ffff' }}>{analysisResult.confidence}</span></p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* CHAT AVEC L'IA */}
+            <div style={styles.chatCard}>
+              <h3 style={{ color: '#ff007f', marginTop: 0 }}>💬 Chat avec l'IA GPT-5.4 Vision</h3>
+              <div style={styles.chatBox}>
+                {chatMessages.map((msg, index) => (
+                  <div key={index} style={{ textAlign: msg.sender === 'user' ? 'right' : 'left', margin: '8px 0' }}>
+                    <span style={{ 
+                      display: 'inline-block', 
+                      padding: '10px 14px', 
+                      borderRadius: '10px', 
+                      background: msg.sender === 'user' ? '#ff007f' : 'rgba(0, 255, 255, 0.15)',
+                      color: '#fff',
+                      fontSize: '14px',
+                      whiteSpace: 'pre-line',
+                      border: msg.sender === 'ai' ? '1px solid #00ffff' : 'none'
+                    }}>
+                      {msg.text}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <form onSubmit={sendChatMessage} style={styles.chatForm}>
+                <input
+                  type="text"
+                  value={inputChat}
+                  onChange={(e) => setInputChat(e.target.value)}
+                  placeholder="Pose une question à l'IA sur le composant..."
+                  style={styles.chatInput}
+                />
+                <button type="submit" style={styles.chatSendBtn}>Envoyer</button>
+              </form>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* FOOTER OFFICIEL */}
+      <footer style={styles.footer}>
+        Fait par Théo Léonard pour le bac 2026/2027 ⚡ Tous droits réservés — ScanRescuse Tokyo Edition ⛩️🏮
+      </footer>
+    </div>
+  );
+}
+
+const styles = {
+  appContainer: {
+    minHeight: '100vh',
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'space-between',
+    position: 'relative',
+    overflowX: 'hidden',
+  },
+  katanaLeft: {
+    position: 'fixed',
+    top: '120px',
+    left: '20px',
+    fontSize: '50px',
+    transform: 'rotate(45deg)',
+    opacity: 0.4,
+    zIndex: 0,
+    pointerEvents: 'none',
+  },
+  katanaRight: {
+    position: 'fixed',
+    top: '120px',
+    right: '20px',
+    fontSize: '50px',
+    transform: 'rotate(-45deg)',
+    opacity: 0.4,
+    zIndex: 0,
+    pointerEvents: 'none',
+  },
+  cherryBlossom1: {
+    position: 'fixed',
+    bottom: '80px',
+    left: '30px',
+    fontSize: '24px',
+    opacity: 0.5,
+    zIndex: 0,
+    pointerEvents: 'none',
+  },
+  cherryBlossom2: {
+    position: 'fixed',
+    top: '50%',
+    right: '40px',
+    fontSize: '24px',
+    opacity: 0.5,
+    zIndex: 0,
+    pointerEvents: 'none',
+  },
+  header: {
+    padding: '20px 40px',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    background: 'rgba(10, 3, 18, 0.85)',
+    borderBottom: '1px solid rgba(255, 0, 127, 0.3)',
+    backdropFilter: 'blur(10px)',
+    zIndex: 2,
+  },
+  logo: {
+    margin: 0,
+    fontSize: '22px',
+    letterSpacing: '2px',
+    color: '#fff',
+  },
+  userInfo: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '20px',
+  },
+  logoutBtn: {
+    background: 'transparent',
+    border: '1px solid #ff007f',
+    color: '#ff007f',
+    padding: '6px 14px',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontWeight: 'bold',
+  },
+  main: {
+    flex: 1,
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: '40px 20px',
+    zIndex: 1,
+  },
+  glassCard: {
+    background: 'rgba(20, 10, 35, 0.9)',
+    border: '1px solid #00ffff',
+    borderRadius: '16px',
+    padding: '35px',
+    width: '100%',
+    maxWidth: '420px',
+    boxShadow: '0 0 25px rgba(0, 255, 255, 0.25)',
+    backdropFilter: 'blur(12px)',
+  },
+  glassCardWide: {
+    background: 'rgba(20, 10, 35, 0.9)',
+    border: '1px solid #ff007f',
+    borderRadius: '16px',
+    padding: '35px',
+    width: '100%',
+    maxWidth: '750px',
+    boxShadow: '0 0 25px rgba(255, 0, 127, 0.25)',
+    backdropFilter: 'blur(12px)',
+    textAlign: 'center',
+  },
+  cardTitle: {
+    textAlign: 'center',
+    color: '#ff007f',
+    marginBottom: '25px',
+    letterSpacing: '1px',
+  },
+  form: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '18px',
+  },
+  inputGroup: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+  },
+  label: {
+    fontSize: '13px',
+    color: '#00ffff',
+    textTransform: 'uppercase',
+    letterSpacing: '1px',
+  },
+  input: {
+    padding: '12px',
+    borderRadius: '8px',
+    border: '1px solid rgba(255, 255, 255, 0.2)',
+    background: 'rgba(10, 3, 18, 0.9)',
+    color: '#fff',
+    outline: 'none',
+    fontSize: '15px',
+  },
+  neonButton: {
+    background: 'linear-gradient(45deg, #ff007f, #00ffff)',
+    color: '#fff',
+    border: 'none',
+    padding: '14px',
+    borderRadius: '8px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+    marginTop: '10px',
+    fontSize: '15px',
+    boxShadow: '0 0 15px rgba(255, 0, 127, 0.5)',
+  },
+  switchAuth: {
+    textAlign: 'center',
+    marginTop: '20px',
+    fontSize: '13px',
+    color: '#aaa',
+    cursor: 'pointer',
+    textDecoration: 'underline',
+  },
+  workspace: {
+    width: '100%',
+    maxWidth: '750px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '25px',
+  },
+  uploadArea: {
+    marginTop: '25px',
+  },
+  fileButton: {
+    display: 'inline-block',
+    background: '#ff007f',
+    color: '#fff',
+    padding: '14px 28px',
+    borderRadius: '8px',
+    cursor: 'pointer',
+    fontWeight: 'bold',
+    boxShadow: '0 0 15px #ff007f',
+  },
+  loadingPulse: {
+    marginTop: '20px',
+    color: '#00ffff',
+    fontStyle: 'italic',
+    fontWeight: 'bold',
+  },
+  resultCard: {
+    background: 'rgba(20, 10, 35, 0.9)',
+    border: '1px solid #00ffff',
+    borderRadius: '16px',
+    padding: '30px',
+    boxShadow: '0 0 25px rgba(0, 255, 255, 0.25)',
+  },
+  resultGrid: {
+    display: 'flex',
+    gap: '25px',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+  },
+  componentImg: {
+    width: '180px',
+    height: '180px',
+    objectFit: 'cover',
+    borderRadius: '12px',
+    border: '2px solid #ff007f',
+  },
+  resultDetails: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    textAlign: 'left',
+  },
+  chatCard: {
+    background: 'rgba(20, 10, 35, 0.9)',
+    border: '1px solid #00ffff',
+    borderRadius: '16px',
+    padding: '25px',
+    boxShadow: '0 0 25px rgba(0, 255, 255, 0.2)',
+  },
+  chatBox: {
+    maxHeight: '200px',
+    overflowY: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '10px',
+    marginBottom: '15px',
+    paddingRight: '5px',
+  },
+  chatForm: {
+    display: 'flex',
+    gap: '10px',
+  },
+  chatInput: {
+    flex: 1,
+    padding: '10px',
+    borderRadius: '8px',
+    border: '1px solid rgba(255, 255, 255, 0.2)',
+    background: 'rgba(10, 3, 18, 0.9)',
+    color: '#fff',
+    outline: 'none',
+  },
+  chatSendBtn: {
+    background: '#00ffff',
+    color: '#0a0312',
+    border: 'none',
+    padding: '10px 20px',
+    borderRadius: '8px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+  },
+  footer: {
+    textAlign: 'center',
+    padding: '20px',
+    background: 'rgba(10, 3, 18, 0.95)',
+    borderTop: '1px solid rgba(0, 255, 255, 0.2)',
+    color: '#aaa',
+    fontSize: '13px',
+    letterSpacing: '1px',
+    zIndex: 2,
+  },
+};
