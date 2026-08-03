@@ -3,17 +3,16 @@ import { ScanLine, Mail, Lock, User, LogIn, UserPlus, Loader2, Send, Upload, Cpu
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { useAuth, formatApiError } from "@/context/AuthContext";
-import { sfx } from "@/lib/sfx";
 
 const TOKYO_IMG = "https://images.unsplash.com/photo-1551641506-ee5bf4cb45f1?crop=entropy&cs=srgb&fm=jpg&w=1400&q=85";
 
 export default function ScanRescueApp() {
-  const { login, register } = useAuth();
+  const [authMode, setAuthMode] = useState("login");
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({ name: "", email: "", password: "" });
+  const [user, setUser] = useState(null);
 
-  // États pour les fonctionnalités du site single-page
+  // États pour les fonctionnalités du site
   const [chatMessages, setChatMessages] = useState([
     { sender: "ai", text: "Bonjour ! Je suis l'intelligence artificielle de ScanRescue. Posez-moi vos questions sur le matériel ou l'électronique." }
   ]);
@@ -22,29 +21,18 @@ export default function ScanRescueApp() {
   const [scanLoading, setScanLoading] = useState(false);
   const [scanResult, setScanResult] = useState(null);
 
-  const googleLogin = () => {
-    sfx.click();
-    const redirectUrl = window.location.origin + "/";
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-  };
-
-  const submitAuth = async (mode) => {
+  const handleAuth = (e) => {
+    e.preventDefault();
     setBusy(true);
-    try {
-      if (mode === "login") await login(form.email, form.password);
-      else await register(form.name, form.email, form.password);
-      sfx.success();
-    } catch (e) {
-      // Gestion sécurisée des erreurs
-    } finally { 
-      setBusy(false); 
-    }
+    setTimeout(() => {
+      setUser({ name: form.name || "Utilisateur", email: form.email });
+      setBusy(false);
+    }, 800);
   };
 
   const handleChatSubmit = (e) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
-    sfx.click();
     const userMsg = chatInput;
     setChatMessages(prev => [...prev, { sender: "user", text: userMsg }]);
     setChatInput("");
@@ -59,7 +47,6 @@ export default function ScanRescueApp() {
 
   const handleScanSubmit = (e) => {
     e.preventDefault();
-    sfx.click();
     setScanLoading(true);
     setScanResult(null);
 
@@ -91,7 +78,7 @@ export default function ScanRescueApp() {
             </div>
             <div className="space-y-4">
               <span className="text-xs font-mono px-3 py-1 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">
-                CYBER-TOKYO V2.0
+                CYBER-TOKYO V2.0 - Autonome
               </span>
               <h1 className="text-4xl font-extrabold tracking-tight">Détection intelligente de composants par IA</h1>
               <p className="text-zinc-400 text-sm max-w-md">Scannez, identifiez et obtenez les spécifications et prix de n'importe quel matériel en un instant.</p>
@@ -107,115 +94,120 @@ export default function ScanRescueApp() {
               <p className="text-sm text-zinc-400">Identifiez vos composants par IA</p>
             </div>
 
-            <Tabs defaultValue="login" className="w-full">
-              <TabsList className="grid w-full grid-cols-2 bg-zinc-900 border border-zinc-800">
-                <TabsTrigger value="login">Connexion</TabsTrigger>
-                <TabsTrigger value="register">Inscription</TabsTrigger>
-              </TabsList>
+            {user ? (
+              <div className="bg-zinc-900/80 border border-cyan-500/30 p-6 rounded-2xl text-center space-y-4">
+                <div className="w-12 h-12 rounded-full bg-cyan-500/20 border border-cyan-500 text-cyan-400 flex items-center justify-center mx-auto font-bold text-lg">
+                  {user.name.charAt(0).toUpperCase()}
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg text-white">Bienvenue, {user.name} !</h3>
+                  <p className="text-xs text-zinc-400">{user.email}</p>
+                </div>
+                <Button onClick={() => setUser(null)} variant="outline" className="w-full border-zinc-700 text-zinc-300 hover:bg-zinc-800">
+                  Se déconnecter
+                </Button>
+              </div>
+            ) : (
+              <Tabs defaultValue="login" className="w-full" onValueChange={setAuthMode}>
+                <TabsList className="grid w-full grid-cols-2 bg-zinc-900 border border-zinc-800">
+                  <TabsTrigger value="login">Connexion</TabsTrigger>
+                  <TabsTrigger value="register">Inscription</TabsTrigger>
+                </TabsList>
 
-              <TabsContent value="login" className="space-y-4 mt-4">
-                <form onSubmit={(e) => { e.preventDefault(); submitAuth("login"); }} className="space-y-4">
-                  <div className="space-y-2">
-                    <label className="text-xs text-zinc-400">Email</label>
-                    <div className="relative">
-                      <Mail className="absolute left-3 top-3 w-4 h-4 text-zinc-500" />
-                      <Input
-                        type="email"
-                        placeholder="nom@exemple.com"
-                        value={form.email}
-                        onChange={(e) => setForm({ ...form, email: e.target.value })}
-                        className="pl-9 bg-zinc-900 border-zinc-800 text-white"
-                        required
-                      />
+                <TabsContent value="login" className="space-y-4 mt-4">
+                  <form onSubmit={handleAuth} className="space-y-4">
+                    <div className="space-y-2">
+                      <label className="text-xs text-zinc-400">Email</label>
+                      <div className="relative">
+                        <Mail className="absolute left-3 top-3 w-4 h-4 text-zinc-500" />
+                        <Input
+                          type="email"
+                          placeholder="nom@exemple.com"
+                          value={form.email}
+                          onChange={(e) => setForm({ ...form, email: e.target.value })}
+                          className="pl-9 bg-zinc-900 border-zinc-800 text-white"
+                          required
+                        />
+                      </div>
                     </div>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-xs text-zinc-400">Mot de passe</label>
-                    <div className="relative">
-                      <Lock className="absolute left-3 top-3 w-4 h-4 text-zinc-500" />
-                      <Input
-                        type="password"
-                        placeholder="••••••••"
-                        value={form.password}
-                        onChange={(e) => setForm({ ...form, password: e.target.value })}
-                        className="pl-9 bg-zinc-900 border-zinc-800 text-white"
-                        required
-                      />
+                    <div className="space-y-2">
+                      <label className="text-xs text-zinc-400">Mot de passe</label>
+                      <div className="relative">
+                        <Lock className="absolute left-3 top-3 w-4 h-4 text-zinc-500" />
+                        <Input
+                          type="password"
+                          placeholder="••••••••"
+                          value={form.password}
+                          onChange={(e) => setForm({ ...form, password: e.target.value })}
+                          className="pl-9 bg-zinc-900 border-zinc-800 text-white"
+                          required
+                        />
+                      </div>
                     </div>
-                  </div>
-                  <Button type="submit" disabled={busy} className="w-full bg-cyan-600 hover:bg-cyan-500 text-white">
-                    {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4 mr-2" />}
-                    Se connecter
-                  </Button>
-                </form>
-              </TabsContent>
+                    <Button type="submit" disabled={busy} className="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-bold">
+                      {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4 mr-2" />}
+                      Se connecter
+                    </Button>
+                  </form>
+                </TabsContent>
 
-              <TabsContent value="register" className="space-y-4 mt-4">
-                <form onSubmit={(e) => { e.preventDefault(); submitAuth("register"); }} className="space-y-4">
-                  <div className="space-y-2">
-                    <label className="text-xs text-zinc-400">Nom complet</label>
-                    <div className="relative">
-                      <User className="absolute left-3 top-3 w-4 h-4 text-zinc-500" />
-                      <Input
-                        type="text"
-                        placeholder="Théo"
-                        value={form.name}
-                        onChange={(e) => setForm({ ...form, name: e.target.value })}
-                        className="pl-9 bg-zinc-900 border-zinc-800 text-white"
-                        required
-                      />
+                <TabsContent value="register" className="space-y-4 mt-4">
+                  <form onSubmit={handleAuth} className="space-y-4">
+                    <div className="space-y-2">
+                      <label className="text-xs text-zinc-400">Nom complet</label>
+                      <div className="relative">
+                        <User className="absolute left-3 top-3 w-4 h-4 text-zinc-500" />
+                        <Input
+                          type="text"
+                          placeholder="Théo"
+                          value={form.name}
+                          onChange={(e) => setForm({ ...form, name: e.target.value })}
+                          className="pl-9 bg-zinc-900 border-zinc-800 text-white"
+                          required
+                        />
+                      </div>
                     </div>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-xs text-zinc-400">Email</label>
-                    <div className="relative">
-                      <Mail className="absolute left-3 top-3 w-4 h-4 text-zinc-500" />
-                      <Input
-                        type="email"
-                        placeholder="nom@exemple.com"
-                        value={form.email}
-                        onChange={(e) => setForm({ ...form, email: e.target.value })}
-                        className="pl-9 bg-zinc-900 border-zinc-800 text-white"
-                        required
-                      />
+                    <div className="space-y-2">
+                      <label className="text-xs text-zinc-400">Email</label>
+                      <div className="relative">
+                        <Mail className="absolute left-3 top-3 w-4 h-4 text-zinc-500" />
+                        <Input
+                          type="email"
+                          placeholder="nom@exemple.com"
+                          value={form.email}
+                          onChange={(e) => setForm({ ...form, email: e.target.value })}
+                          className="pl-9 bg-zinc-900 border-zinc-800 text-white"
+                          required
+                        />
+                      </div>
                     </div>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-xs text-zinc-400">Mot de passe</label>
-                    <div className="relative">
-                      <Lock className="absolute left-3 top-3 w-4 h-4 text-zinc-500" />
-                      <Input
-                        type="password"
-                        placeholder="••••••••"
-                        value={form.password}
-                        onChange={(e) => setForm({ ...form, password: e.target.value })}
-                        className="pl-9 bg-zinc-900 border-zinc-800 text-white"
-                        required
-                      />
+                    <div className="space-y-2">
+                      <label className="text-xs text-zinc-400">Mot de passe</label>
+                      <div className="relative">
+                        <Lock className="absolute left-3 top-3 w-4 h-4 text-zinc-500" />
+                        <Input
+                          type="password"
+                          placeholder="••••••••"
+                          value={form.password}
+                          onChange={(e) => setForm({ ...form, password: e.target.value })}
+                          className="pl-9 bg-zinc-900 border-zinc-800 text-white"
+                          required
+                        />
+                      </div>
                     </div>
-                  </div>
-                  <Button type="submit" disabled={busy} className="w-full bg-cyan-600 hover:bg-cyan-500 text-white">
-                    {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4 mr-2" />}
-                    Créer un compte
-                  </Button>
-                </form>
-              </TabsContent>
-            </Tabs>
-
-            <div className="relative flex py-2 items-center">
-              <div className="flex-grow border-t border-zinc-800"></div>
-              <span className="flex-shrink mx-4 text-zinc-500 text-xs uppercase">ou</span>
-              <div className="flex-grow border-t border-zinc-800"></div>
-            </div>
-
-            <Button type="button" variant="outline" onClick={googleLogin} className="w-full border-zinc-800 bg-zinc-900/50 hover:bg-zinc-800 text-white">
-              Continuer avec Google
-            </Button>
+                    <Button type="submit" disabled={busy} className="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-bold">
+                      {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4 mr-2" />}
+                      Créer un compte
+                    </Button>
+                  </form>
+                </TabsContent>
+              </Tabs>
+            )}
           </div>
         </div>
       </div>
 
-      {/* SECTION SCANNER DE COMPOSANT (100% IA) */}
+      {/* SECTION SCANNER DE COMPOSANT */}
       <section className="py-20 px-6 bg-zinc-950 border-t border-zinc-900">
         <div className="max-w-4xl mx-auto space-y-8">
           <div className="text-center space-y-2">
@@ -243,14 +235,14 @@ export default function ScanRescueApp() {
                 </div>
               </div>
 
-              <Button type="submit" disabled={scanLoading} className="w-full bg-cyan-600 hover:bg-cyan-500 text-white">
+              <Button type="submit" disabled={scanLoading} className="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-bold">
                 {scanLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ScanLine className="w-4 h-4 mr-2" />}
                 Lancer l'analyse 100% IA
               </Button>
             </form>
 
             {scanResult && (
-              <div className="border border-cyan-500/30 bg-cyan-950/20 p-6 rounded-xl space-y-4 animate-fadeIn">
+              <div className="border border-cyan-500/30 bg-cyan-950/20 p-6 rounded-xl space-y-4">
                 <div className="flex items-center justify-between border-b border-cyan-500/20 pb-3">
                   <span className="text-xs font-mono text-cyan-400 uppercase tracking-wider flex items-center gap-1">
                     <CheckCircle2 className="w-4 h-4" /> Détection réussie (100%)
@@ -274,7 +266,7 @@ export default function ScanRescueApp() {
         </div>
       </section>
 
-      {/* SECTION CHAT IA 100% FONCTIONNEL */}
+      {/* SECTION CHAT IA */}
       <section className="py-20 px-6 bg-[#030303] border-t border-zinc-900">
         <div className="max-w-3xl mx-auto space-y-6">
           <div className="text-center space-y-2">
