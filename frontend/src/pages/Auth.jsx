@@ -1,133 +1,173 @@
-from datetime import datetime, timezone, timedelta
-import json
-import logging
-import os
-from pathlib import Path
-import re
-import secrets
-import uuid
-from typing import Optional, List
+import { useState } from "react";
+import { motion } from "framer-motion";
+import { toast } from "sonner";
+import { ScanLine, Mail, Lock, User, LogIn, UserPlus, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { useAuth, formatApiError } from "@/context/AuthContext";
+import { sfx } from "@/lib/sfx";
 
-from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, Header, HTTPException, Request, Response
-from pydantic import BaseModel, EmailStr, Field
-from starlette.middleware.cors import CORSMiddleware
+const TOKYO_IMG = "https://images.unsplash.com/photo-1551641506-ee5bf4cb45f1?crop=entropy&cs=srgb&fm=jpg&w=1400&q=85";
 
-# Import des outils d'Emergent Integrations
-from emergentintegrations.llm.chat import ImageContent, LlmChat, UserMessage
-from motor.motor_asyncio import AsyncIOMotorClient
-import requests
-import bcrypt
+export default function Auth() {
+  const { login, register } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState({ name: "", email: "", password: "" });
 
-# Configuration du logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-)
-logger = logging.getLogger(__name__)
+  const googleLogin = () => {
+    sfx.click();
+    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+    const redirectUrl = window.location.origin + "/";
+    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+  };
 
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
-
-# Initialisation MongoDB
-mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ.get('DB_NAME', 'composcan')]
-
-# Configuration IA et Storage
-EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
-APP_NAME = 'compo-scan'
-STORAGE_URL = 'https://integrations.emergentagent.com/objstore/api/v1/storage'
-EMERGENT_AUTH_SESSION = (
-    'https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data'
-)
-
-# IMPORTANT : mets ici la ou les URL réelles de ton frontend (ex: en local
-# et en prod). Ne JAMAIS combiner allow_origins=["*"] avec
-# allow_credentials=True : les navigateurs bloquent alors les cookies.
-ALLOWED_ORIGINS = os.environ.get(
-    'ALLOWED_ORIGINS', 'http://localhost:3000'
-).split(',')
-
-app = FastAPI(title="Compo-Scan API", version="2.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-# ---------- AI (Vision) ----------
-# ATTENTION: vérifie que le nom de modèle ci-dessous est bien un identifiant
-# valide accepté par ta version de la librairie emergentintegrations /
-# du fournisseur "openai". Un nom de modèle invalide ou inexistant fera
-# planter chaque appel et retombera systématiquement sur le message
-# d'erreur générique plus bas (ce qui ressemble à "ça ne trouve jamais le
-# bon composant").
-AI_PROVIDER = 'openai'
-AI_MODEL = os.environ.get('AI_MODEL', 'gpt-4o') # à adapter selon ce que ta lib supporte réellement
-
-SYSTEM_PROMPT = (
-    "Tu es un expert mondialement reconnu en matériel informatique, "
-async def _llm_call(system: str, text: str, image_b64: str = None):
-  chat = (
-      LlmChat(
-          api_key=EMERGENT_LLM_KEY,
-          session_id=f's-{uuid.uuid4()}',
-          system_message=system,
-      )
-      .with_model(AI_PROVIDER, AI_MODEL)
-  )
-  files = (
-      [ImageContent(image_base64=_strip_data_url(image_b64))]
-      if image_b64
-      else None
-  )
-  msg = (
-      UserMessage(text=text, file_contents=files)
-      if files
-      else UserMessage(text=text)
-  )
-  return await chat.send_message(msg)
-
-
-async def detecter_composant(image_base64: str) -> dict:
-  chat = (
-      LlmChat(
-          api_key=EMERGENT_LLM_KEY,
-          session_id=f'detect-{uuid.uuid4()}',
-          system_message=SYSTEM_PROMPT,
-      )
-      .with_model(AI_PROVIDER, AI_MODEL)
-  )
-
-  image = ImageContent(image_base64=_strip_data_url(image_base64))
-  message = UserMessage(
-      text=(
-          'Analyse cette photo, identifie précisément le composant de PC ou '
-          'l\'élément électronique présent, et renvoie le JSON demandé.'
-      ),
-      file_contents=[image],
-  )
-
-  try:
-    raw = await chat.send_message(message)
-    raw = raw if isinstance(raw, str) else str(raw)
-    logger.info(f'Réponse brute de l\'IA : {raw[:150]}...')
-    return _extract_json(raw)
-  except Exception as e:
-    logger.error(f'Erreur critique lors de l\'analyse IA : {e}')
-    return {
-        'name': 'Composant non analysé (erreur IA)',
-        'category': 'Erreur d\'analyse IA',
-        'price_estimate': 'Non disponible',
-        'description': (
-            "L'analyse visuelle a rencontré une erreur technique, le nom de "
-            "modèle est invalide, ou l'image est illisible."
-        ),
-        'confidence': 'Faible',
+  const submit = async (mode) => {
+    setBusy(true);
+    try {
+      if (mode === "login") await login(form.email, form.password);
+      else await register(form.name, form.email, form.password);
+      sfx.success();
+      toast.success("Bienvenue sur ScanRescue !");
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally {
+      setBusy(false);
     }
+  };
 
+  return (
+    <div className="min-h-screen grid lg:grid-cols-2 bg-[#050505]">
+      {/* Left: Tokyo image */}
+      <div className="relative hidden lg:block overflow-hidden">
+        <img src={TOKYO_IMG} alt="Tokyo néon" className="absolute inset-0 w-full h-full object-cover" />
+        <div className="absolute inset-0 bg-[#050505]/55" />
+        <div className="absolute inset-0 cyber-grid opacity-40" />
+        <div className="absolute top-10 left-10 vertical-text font-display text-white/10 text-5xl select-none">スキャン</div>
+      </div>
 
-# ---------- Analyse routes ----------
-@api_router.post('/analyze')
-async def analyze_component(body: AnalyzeRequest, request: Request):
-  user = await get_current_user(request)
-  analysis_result = await detecter_composant(body.image_base64)
+      {/* Right: Auth form */}
+      <div className="flex flex-col justify-center items-center p-8 lg:p-16">
+        <div className="w-full max-w-md space-y-8">
+          <div className="text-center space-y-2">
+            <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-cyan-500/10 text-cyan-400 mb-2">
+              <ScanLine className="w-6 h-6" />
+            </div>
+            <h1 className="text-2xl font-bold tracking-tight text-white">Compo-Scan</h1>
+            <p className="text-sm text-zinc-400">Identifiez vos composants PC et électroniques par IA</p>
+          </div>
+
+          <Tabs defaultValue="login" className="w-full">
+            <TabsList className="grid w-full grid-cols-2 bg-zinc-900 border border-zinc-800">
+              <TabsTrigger value="login">Connexion</TabsTrigger>
+              <TabsTrigger value="register">Inscription</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="login" className="space-y-4 mt-4">
+              <form onSubmit={(e) => { e.preventDefault(); submit("login"); }} className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-xs text-zinc-400">Email</label>
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-3 w-4 h-4 text-zinc-500" />
+                    <Input
+                      type="email"
+                      placeholder="nom@exemple.com"
+                      value={form.email}
+                      onChange={(e) => setForm({ ...form, email: e.target.value })}
+                      className="pl-9 bg-zinc-900 border-zinc-800 text-white"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs text-zinc-400">Mot de passe</label>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-3 w-4 h-4 text-zinc-500" />
+                    <Input
+                      type="password"
+                      placeholder="••••••••"
+                      value={form.password}
+                      onChange={(e) => setForm({ ...form, password: e.target.value })}
+                      className="pl-9 bg-zinc-900 border-zinc-800 text-white"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <Button type="submit" disabled={busy} className="w-full bg-cyan-600 hover:bg-cyan-500 text-white">
+                  {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4 mr-2" />}
+                  Se connecter
+                </Button>
+              </form>
+            </TabsContent>
+
+            <TabsContent value="register" className="space-y-4 mt-4">
+              <form onSubmit={(e) => { e.preventDefault(); submit("register"); }} className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-xs text-zinc-400">Nom complet</label>
+                  <div className="relative">
+                    <User className="absolute left-3 top-3 w-4 h-4 text-zinc-500" />
+                    <Input
+                      type="text"
+                      placeholder="Jean Dupont"
+                      value={form.name}
+                      onChange={(e) => setForm({ ...form, name: e.target.value })}
+                      className="pl-9 bg-zinc-900 border-zinc-800 text-white"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs text-zinc-400">Email</label>
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-3 w-4 h-4 text-zinc-500" />
+                    <Input
+                      type="email"
+                      placeholder="nom@exemple.com"
+                      value={form.email}
+                      onChange={(e) => setForm({ ...form, email: e.target.value })}
+                      className="pl-9 bg-zinc-900 border-zinc-800 text-white"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs text-zinc-400">Mot de passe</label>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-3 w-4 h-4 text-zinc-500" />
+                    <Input
+                      type="password"
+                      placeholder="••••••••"
+                      value={form.password}
+                      onChange={(e) => setForm({ ...form, password: e.target.value })}
+                      className="pl-9 bg-zinc-900 border-zinc-800 text-white"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <Button type="submit" disabled={busy} className="w-full bg-cyan-600 hover:bg-cyan-500 text-white">
+                  {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4 mr-2" />}
+                  Créer un compte
+                </Button>
+              </form>
+            </TabsContent>
+          </Tabs>
+
+          <div className="relative flex py-2 items-center">
+            <div className="flex-grow border-t border-zinc-800"></div>
+            <span className="flex-shrink mx-4 text-zinc-500 text-xs uppercase">ou</span>
+            <div className="flex-grow border-t border-zinc-800"></div>
+          </div>
+
+          <Button type="button" variant="outline" onClick={googleLogin} className="w-full border-zinc-800 bg-zinc-900/50 hover:bg-zinc-800 text-white">
+            Continuer avec Google
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
